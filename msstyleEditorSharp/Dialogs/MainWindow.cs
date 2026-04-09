@@ -178,6 +178,26 @@ namespace msstyleEditor
             return tinted;
         }
 
+        private string BuildClassInheritanceStatusText(StyleClass cls)
+        {
+            if (cls == null)
+            {
+                return "No selection";
+            }
+
+            if (m_style != null && cls.BaseClassId >= 0)
+            {
+                if (m_style.Classes.TryGetValue(cls.BaseClassId, out StyleClass baseClass))
+                {
+                    return $"{cls.ClassName} (#{cls.ClassId}) inherits from {baseClass.ClassName} (#{baseClass.ClassId})";
+                }
+
+                return $"{cls.ClassName} (#{cls.ClassId}) inherits from Unknown (#{cls.BaseClassId})";
+            }
+
+            return $"{cls.ClassName} (#{cls.ClassId}) has no base class";
+        }
+
         private void UpdateItemSelection(StyleClass cls = null, StylePart part = null, StyleState state = null, int resId = -1)
         {
             m_selection.Class = cls;
@@ -185,10 +205,7 @@ namespace msstyleEditor
             m_selection.State = state;
             m_selection.ResourceId = resId;
 
-            lbStatusMessage.Text = "C: " + cls.ClassId;
-            if (part != null) lbStatusMessage.Text += ", P: " + part.PartId;
-            if (state != null) lbStatusMessage.Text += ", S: " + state.StateId;
-            if (resId >= 0) lbStatusMessage.Text += ", R: " + resId;
+            lbStatusMessage.Text = BuildClassInheritanceStatusText(cls);
         }
 
         private void UpdateWindowCaption(string text)
@@ -1920,8 +1937,9 @@ namespace msstyleEditor
             if (m_style == null)
                 return;
 
-            string className = ShowInputDialog("Add Class", "Enter the name for the new class:");
-            if (string.IsNullOrWhiteSpace(className))
+            string className;
+            int baseClassId;
+            if (!ShowAddClassDialog(out className, out baseClassId))
                 return;
 
             // Find next available class ID
@@ -1932,7 +1950,8 @@ namespace msstyleEditor
             var newClass = new StyleClass
             {
                 ClassId = newClassId,
-                ClassName = className.Trim()
+                ClassName = className.Trim(),
+                BaseClassId = baseClassId
             };
 
             // Add "Common Properties" part (part 0) with default state 0 = "Common"
@@ -2265,6 +2284,110 @@ namespace msstyleEditor
             part.States.Remove(state.StateId);
             stateNode.Remove();
             DisplayPart(cls, part);
+        }
+
+        private sealed class BaseClassOption
+        {
+            public int ClassId { get; }
+            public string DisplayName { get; }
+
+            public BaseClassOption(int classId, string displayName)
+            {
+                ClassId = classId;
+                DisplayName = displayName;
+            }
+
+            public override string ToString() => DisplayName;
+        }
+
+        private bool ShowAddClassDialog(out string className, out int baseClassId)
+        {
+            className = null;
+            baseClassId = -1;
+
+            var baseClassOptions = new List<BaseClassOption>
+            {
+                new BaseClassOption(-1, "(No explicit base class)")
+            };
+
+            bool filterToCompatibleBaseClasses = m_style.HasBaseClassMap;
+            foreach (var cls in m_style.Classes.OrderBy(kv => kv.Value.ClassName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (filterToCompatibleBaseClasses && !m_style.CanUseClassAsBaseClass(cls.Key))
+                {
+                    continue;
+                }
+
+                baseClassOptions.Add(new BaseClassOption(cls.Key, $"{cls.Value.ClassName} (#{cls.Key})"));
+            }
+
+            using (var form = new Form())
+            using (var lbClassName = new Label())
+            using (var tbClassName = new TextBox())
+            using (var lbBaseClass = new Label())
+            using (var cbBaseClass = new ComboBox())
+            using (var btOk = new Button())
+            using (var btCancel = new Button())
+            {
+                form.Text = "Add Class";
+                form.StartPosition = FormStartPosition.CenterParent;
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MinimizeBox = false;
+                form.MaximizeBox = false;
+                form.ClientSize = new Size(420, 145);
+                form.AcceptButton = btOk;
+                form.CancelButton = btCancel;
+
+                lbClassName.Text = "Enter the name for the new class:";
+                lbClassName.SetBounds(10, 10, 400, 20);
+
+                tbClassName.SetBounds(10, 32, 400, 20);
+
+                lbBaseClass.Text = "Inherit from:";
+                lbBaseClass.SetBounds(10, 58, 400, 20);
+
+                cbBaseClass.DropDownStyle = ComboBoxStyle.DropDownList;
+                cbBaseClass.SetBounds(10, 80, 400, 21);
+                cbBaseClass.Items.AddRange(baseClassOptions.Cast<object>().ToArray());
+                cbBaseClass.SelectedIndex = 0;
+
+                btOk.Text = "OK";
+                btOk.DialogResult = DialogResult.OK;
+                btOk.SetBounds(240, 112, 80, 25);
+                btOk.Enabled = false;
+
+                btCancel.Text = "Cancel";
+                btCancel.DialogResult = DialogResult.Cancel;
+                btCancel.SetBounds(330, 112, 80, 25);
+
+                tbClassName.TextChanged += (s, e) =>
+                {
+                    btOk.Enabled = !string.IsNullOrWhiteSpace(tbClassName.Text);
+                };
+
+                form.Controls.AddRange(new Control[]
+                {
+                    lbClassName,
+                    tbClassName,
+                    lbBaseClass,
+                    cbBaseClass,
+                    btOk,
+                    btCancel
+                });
+
+                if (form.ShowDialog(this) == DialogResult.OK)
+                {
+                    className = tbClassName.Text.Trim();
+                    if (cbBaseClass.SelectedItem is BaseClassOption option)
+                    {
+                        baseClassId = option.ClassId;
+                    }
+
+                    return !string.IsNullOrWhiteSpace(className);
+                }
+
+                return false;
+            }
         }
 
         private static string ShowInputDialog(string title, string prompt)

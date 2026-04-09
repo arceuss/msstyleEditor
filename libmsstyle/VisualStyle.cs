@@ -71,6 +71,8 @@ namespace libmsstyle
         private int m_originalClassCount;
 
         private byte[] m_originalBcmap;
+        private int m_bcmapClassIdOffset = 0;
+        private int m_bcmapEntryCount = 0;
 
         // XP-specific: maps image file paths (from INI) to BITMAP resource names
         private Dictionary<string, string> m_xpImageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -386,7 +388,8 @@ namespace libmsstyle
             // Append new classes (those with IDs beyond what was loaded from original CMAP)
             var newClasses = m_classes
                 .Where(kv => kv.Key >= m_originalClassCount)
-                .OrderBy(kv => kv.Key);
+                .OrderBy(kv => kv.Key)
+                .ToList();
 
             foreach (var kv in newClasses)
             {
@@ -405,23 +408,62 @@ namespace libmsstyle
             if (!Win32Api.UpdateResource(updateHandle, "CMAP", "CMAP", lid, data, (uint)data.Length))
                 return false;
 
-            // Update BCMAP: preserve original entries and append -1 for each new class.
-            // BCMAP has one int32 per class (except the last 3 special classes).
-            if (m_originalBcmap != null && newClasses.Any())
+            // Update BCMAP using uxtheme-compatible format:
+            // int32 count + count int32 parent indices.
+            if (m_originalBcmap != null && newClasses.Count > 0)
             {
-                var bcms = new MemoryStream();
-                bcms.Write(m_originalBcmap, 0, m_originalBcmap.Length);
-                foreach (var kv in newClasses)
+                int originalEntryCount;
+                List<int> originalParents;
+                if (TryParseBaseClassMap(m_originalBcmap, out originalEntryCount, out originalParents))
                 {
-                    // -1 means no parent class
-                    bcms.Write(BitConverter.GetBytes(-1), 0, 4);
+                    int updatedEntryCount = originalEntryCount + newClasses.Count;
+                    var bcms = new MemoryStream();
+
+                    bcms.Write(BitConverter.GetBytes(updatedEntryCount), 0, 4);
+                    foreach (int parentIndex in originalParents)
+                    {
+                        bcms.Write(BitConverter.GetBytes(parentIndex), 0, 4);
+                    }
+
+                    foreach (var kv in newClasses)
+                    {
+                        int parentIndex = -1;
+                        int parentClassId = kv.Value.BaseClassId;
+                        if (parentClassId >= 0)
+                        {
+                            int mapped = parentClassId - m_bcmapClassIdOffset;
+                            if (mapped >= 0 && mapped < updatedEntryCount)
+                            {
+                                parentIndex = mapped;
+                            }
+                        }
+
+                        bcms.Write(BitConverter.GetBytes(parentIndex), 0, 4);
+                    }
+
+                    ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
+                    if (bcmapLid == 0xFFFF)
+                        bcmapLid = m_resourceLanguage;
+                    byte[] bcmapData = bcms.ToArray();
+                    if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
+                        return false;
                 }
-                ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
-                if (bcmapLid == 0xFFFF)
-                    bcmapLid = m_resourceLanguage;
-                byte[] bcmapData = bcms.ToArray();
-                if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
-                    return false;
+                else
+                {
+                    // Fallback for malformed BCMAP data: preserve original behavior.
+                    var bcms = new MemoryStream();
+                    bcms.Write(m_originalBcmap, 0, m_originalBcmap.Length);
+                    foreach (var kv in newClasses)
+                    {
+                        bcms.Write(BitConverter.GetBytes(-1), 0, 4);
+                    }
+                    ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
+                    if (bcmapLid == 0xFFFF)
+                        bcmapLid = m_resourceLanguage;
+                    byte[] bcmapData = bcms.ToArray();
+                    if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
+                        return false;
+                }
             }
 
             return true;
@@ -452,9 +494,10 @@ namespace libmsstyle
             LoadClassmap(cmap);
 
             // Load BCMAP (Base Class Map) for class inheritance.
-            // BCMAP is an int32[] where each entry is the parent classID or -1.
-            // It has exactly (CMAP non-empty count - 3) entries.
+            // uxtheme reads this as: int32 count, followed by <count> int32 parent indices.
+            // Each entry is parent index or -1.
             m_originalBcmap = ResourceAccess.GetResource(m_moduleHandle, "BCMAP", "BCMAP");
+            LoadBaseClassMap(m_originalBcmap);
 
             // With the class map in place, we can reason about the platform.
             m_platform = DeterminePlatform();
@@ -623,6 +666,96 @@ namespace libmsstyle
 
             m_cmapTotalEntries = totalEntries;
             m_originalClassCount = numFound;
+        }
+
+        public bool HasBaseClassMap
+        {
+            get { return m_originalBcmap != null && m_bcmapEntryCount > 0; }
+        }
+
+        public bool CanUseClassAsBaseClass(int classId)
+        {
+            if (!HasBaseClassMap)
+            {
+                return false;
+            }
+
+            int mappedIndex = classId - m_bcmapClassIdOffset;
+            if (mappedIndex < 0)
+            {
+                return false;
+            }
+
+            int currentNewClasses = Math.Max(0, m_classes.Count - m_originalClassCount);
+            int currentEntryCount = m_bcmapEntryCount + currentNewClasses;
+            return mappedIndex < currentEntryCount;
+        }
+
+        bool TryParseBaseClassMap(byte[] bcmap, out int entryCount, out List<int> parents)
+        {
+            entryCount = 0;
+            parents = new List<int>();
+
+            if (bcmap == null || bcmap.Length < 4)
+            {
+                return false;
+            }
+
+            entryCount = BitConverter.ToInt32(bcmap, 0);
+            if (entryCount < 0)
+            {
+                return false;
+            }
+
+            int maxAvailable = (bcmap.Length - 4) / 4;
+            entryCount = Math.Min(entryCount, maxAvailable);
+
+            for (int i = 0; i < entryCount; ++i)
+            {
+                parents.Add(BitConverter.ToInt32(bcmap, 4 + i * 4));
+            }
+
+            return true;
+        }
+
+        void LoadBaseClassMap(byte[] bcmap)
+        {
+            int entryCount;
+            List<int> parents;
+            if (!TryParseBaseClassMap(bcmap, out entryCount, out parents))
+            {
+                m_bcmapClassIdOffset = 0;
+                m_bcmapEntryCount = 0;
+                return;
+            }
+
+            m_bcmapEntryCount = entryCount;
+
+            // BCMAP indices are in the internal class index space used by uxtheme.
+            // Map them into our CMAP-based class IDs using a count-derived offset.
+            m_bcmapClassIdOffset = Math.Max(0, m_classes.Count - entryCount);
+
+            for (int i = 0; i < entryCount; ++i)
+            {
+                int classId = i + m_bcmapClassIdOffset;
+                if (!m_classes.TryGetValue(classId, out StyleClass cls))
+                {
+                    continue;
+                }
+
+                int parentIndex = parents[i];
+                if (parentIndex >= 0)
+                {
+                    int parentClassId = parentIndex + m_bcmapClassIdOffset;
+                    cls.BaseClassId = m_classes.ContainsKey(parentClassId)
+                        ? parentClassId
+                        : -1;
+                }
+                else
+                {
+                    cls.BaseClassId = -1;
+                }
+            }
         }
 
         void LoadProperties(byte[] pmap)
