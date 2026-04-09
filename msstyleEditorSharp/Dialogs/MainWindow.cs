@@ -339,34 +339,132 @@ namespace msstyleEditor
             m_imageView.SetActiveTabs(-1, 0);
         }
 
+        private void ResetSelectedImageRegion()
+        {
+            m_selectedCropRect = null;
+            m_selectedStateIndex = -1;
+            m_selectedImageCount = 0;
+            m_selectedImageLayout = 0;
+        }
+
+        private static bool TryGetAtlasRect(StyleState state, out Rectangle atlasRect)
+        {
+            atlasRect = Rectangle.Empty;
+            if (state == null)
+            {
+                return false;
+            }
+
+            var rectProp = state.Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.ATLASRECT);
+            if (rectProp == null)
+            {
+                return false;
+            }
+
+            var mt = rectProp.GetValueAs<Margins>();
+            atlasRect = new Rectangle(
+                mt.Left,
+                mt.Top,
+                Math.Max(mt.Right - mt.Left, 0),
+                Math.Max(mt.Bottom - mt.Top, 0));
+
+            return atlasRect.Width > 0 && atlasRect.Height > 0;
+        }
+
+        private static Rectangle SliceImageRegion(Rectangle imageRegion, int imageLayout, int imageCount, int imageIndex)
+        {
+            int left = imageRegion.Left;
+            int top = imageRegion.Top;
+            int right = imageRegion.Right;
+            int bottom = imageRegion.Bottom;
+
+            if (imageLayout == 1)
+            {
+                left += imageRegion.Width * imageIndex / imageCount;
+                right = imageRegion.Left + imageRegion.Width * (imageIndex + 1) / imageCount;
+            }
+            else
+            {
+                top += imageRegion.Height * imageIndex / imageCount;
+                bottom = imageRegion.Top + imageRegion.Height * (imageIndex + 1) / imageCount;
+            }
+
+            return Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
+        private bool TryGetSelectedAtlasRegion(StylePart part, StyleState state, out Rectangle atlasRegion)
+        {
+            atlasRegion = Rectangle.Empty;
+            if (TryGetAtlasRect(state, out atlasRegion))
+            {
+                return true;
+            }
+
+            StyleState commonState;
+            if (!part.States.TryGetValue(0, out commonState) || !TryGetAtlasRect(commonState, out var commonAtlasRegion))
+            {
+                return false;
+            }
+
+            if (state.StateId <= 0)
+            {
+                atlasRegion = commonAtlasRegion;
+                return true;
+            }
+
+            int imageCount = 1;
+            commonState.TryGetPropertyValue(IDENTIFIER.IMAGECOUNT, ref imageCount);
+            if (imageCount > 1)
+            {
+                int imageLayout = 0;
+                commonState.TryGetPropertyValue(IDENTIFIER.IMAGELAYOUT, ref imageLayout);
+
+                int stateIndex = state.StateId - 1;
+                if (stateIndex >= 0 && stateIndex < imageCount)
+                {
+                    atlasRegion = SliceImageRegion(commonAtlasRegion, imageLayout, imageCount, stateIndex);
+                    return true;
+                }
+            }
+
+            atlasRegion = commonAtlasRegion;
+            return true;
+        }
+
+        private bool TryGetPartAtlasRegion(StylePart part, out Rectangle atlasRegion)
+        {
+            atlasRegion = Rectangle.Empty;
+
+            StyleState commonState;
+            if (part.States.TryGetValue(0, out commonState) && TryGetAtlasRect(commonState, out atlasRegion))
+            {
+                return true;
+            }
+
+            foreach (var state in part.States.Values)
+            {
+                if (TryGetAtlasRect(state, out atlasRegion))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private void DisplayPart(StyleClass cls, StylePart part)
         {
             // remember the shown class and part
             UpdateItemSelection(cls, part);
             // clear state-level crop
-            m_selectedCropRect = null;
-            m_selectedStateIndex = -1;
-            m_selectedImageCount = 0;
-            m_selectedImageLayout = 0;
+            ResetSelectedImageRegion();
             // reset propery view
             m_propertyView.SetStylePart(m_style, cls, part);
 
             // find ATLASRECT property so we can set the part highlights
-            var def = default(KeyValuePair<int, StyleState>);
-            var state = part.States.FirstOrDefault();
-            if (!state.Equals(def))
+            if (TryGetPartAtlasRegion(part, out var atlasRegion))
             {
-                var rectProp = state.Value.Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.ATLASRECT);
-                if (rectProp != null)
-                {
-                    var mt = rectProp.GetValueAs<Margins>();
-                    var ha = new Rectangle(
-                        new Point(mt.Left, mt.Top),
-                        new Size(mt.Right - mt.Left, mt.Bottom - mt.Top)
-                    );
-                    m_imageView.ViewHighlightArea = ha;
-                }
-                else m_imageView.ViewHighlightArea = null;
+                m_imageView.ViewHighlightArea = atlasRegion;
             }
             else m_imageView.ViewHighlightArea = null;
 
@@ -403,21 +501,16 @@ namespace msstyleEditor
             UpdateItemSelection(cls, part, state);
             // show all properties for the parent part (same as clicking the part)
             m_propertyView.SetStylePart(m_style, cls, part);
+            ResetSelectedImageRegion();
 
-            // find ATLASRECT property for this specific state
-            var rectProp = state.Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.ATLASRECT);
-            if (rectProp != null)
+            if (TryGetSelectedAtlasRegion(part, state, out var atlasRegion))
             {
-                var mt = rectProp.GetValueAs<Margins>();
-                m_selectedCropRect = new Rectangle(
-                    mt.Left, mt.Top,
-                    mt.Right - mt.Left, mt.Bottom - mt.Top);
+                m_selectedCropRect = atlasRegion;
             }
             else
             {
                 // For non-atlas images, compute crop from IMAGECOUNT/IMAGELAYOUT
                 // Properties like IMAGECOUNT are stored on state 0 (the "common" state)
-                m_selectedCropRect = null;
                 StyleState state0;
                 if (state.StateId > 0 && part.States.TryGetValue(0, out state0))
                 {
