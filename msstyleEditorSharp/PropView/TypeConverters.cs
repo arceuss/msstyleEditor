@@ -57,12 +57,12 @@ namespace msstyleEditor.PropView
 
         public override bool GetStandardValuesExclusive(ITypeDescriptorContext context)
         {
-            return true;
+            return false;
         }
 
         public override bool GetStandardValuesSupported(ITypeDescriptorContext context)
         {
-            return true;
+            return false;
         }
     }
 

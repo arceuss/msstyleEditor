@@ -405,7 +405,7 @@ namespace msstyleEditor
 
         private static LOGFONT ParseFontString(string fontStr)
         {
-            // Format: "Name, Size, [bold], [italic], [underline], [quality:N]"
+            // Format: "Name, Size, [bold], [italic], [underline], [quality:Name|N]"
             var lf = new LOGFONT();
             var parts = fontStr.Split(new char[] { ',' }, StringSplitOptions.None);
 
@@ -436,10 +436,41 @@ namespace msstyleEditor
                 else if (p == "underline") lf.lfUnderline = 1;
                 else if (p.StartsWith("quality:"))
                 {
+                    var qualityToken = p.Substring(8).Trim();
                     int q;
-                    if (Int32.TryParse(p.Substring(8).Trim(), out q))
+                    if (Int32.TryParse(qualityToken, out q))
                     {
                         lf.lfQuality = (byte)q;
+                    }
+                    else
+                    {
+                        switch (qualityToken.Replace(" ", string.Empty))
+                        {
+                            case "default":
+                                lf.lfQuality = 0;
+                                break;
+                            case "draft":
+                                lf.lfQuality = 1;
+                                break;
+                            case "proof":
+                                lf.lfQuality = 2;
+                                break;
+                            case "nonantialiased":
+                            case "non-antialiased":
+                                lf.lfQuality = 3;
+                                break;
+                            case "antialiased":
+                            case "anti-aliased":
+                                lf.lfQuality = 4;
+                                break;
+                            case "cleartype":
+                                lf.lfQuality = 5;
+                                break;
+                            case "cleartypenatural":
+                            case "cleartype-natural":
+                                lf.lfQuality = 6;
+                                break;
+                        }
                     }
                 }
             }

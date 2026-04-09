@@ -268,6 +268,8 @@ namespace msstyleEditor.PropView
         public override bool IsReadOnly => false;
         public override Type PropertyType => m_property.GetValue().GetType();
 
+        public VisualStyle Style => m_style;
+
         public override TypeConverter Converter
         {
             get
@@ -299,6 +301,17 @@ namespace msstyleEditor.PropView
                     return base.Converter;
                 }
             }
+        }
+
+        public override object GetEditor(Type editorBaseType)
+        {
+            if (editorBaseType == typeof(System.Drawing.Design.UITypeEditor) &&
+                m_property.Header.typeID == (int)IDENTIFIER.FONT)
+            {
+                return new FontResourceEditor();
+            }
+
+            return base.GetEditor(editorBaseType);
         }
 
         public override bool ShouldSerializeValue(object component)
