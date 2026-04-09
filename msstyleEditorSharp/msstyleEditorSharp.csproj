@@ -9,7 +9,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>msstyleEditor</RootNamespace>
     <AssemblyName>msstyleEditor</AssemblyName>
-    <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
     <NuGetPackageImportStamp>
@@ -109,6 +109,12 @@
     </Compile>
     <Compile Include="Dialogs\AboutDialog.Designer.cs">
       <DependentUpon>AboutDialog.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Dialogs\ColorSchemeDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Dialogs\ColorSchemeDialog.Designer.cs">
+      <DependentUpon>ColorSchemeDialog.cs</DependentUpon>
     </Compile>
     <Compile Include="Dialogs\ClassView.cs">
       <SubType>Form</SubType>
@@ -264,6 +270,10 @@
   <ItemGroup>
     <None Include="Icons\Play32.png" />
     <None Include="Icons\Stop32.png" />
+    <None Include="Icons\edit16.png" />
+    <None Include="Icons\edit32.png" />
+    <None Include="Icons\placeholder16.png" />
+    <None Include="Icons\placeholder32.png" />
     <Content Include="msstyleEditor.ico" />
     <Content Include="msstyleEditorNew.ico" />
   </ItemGroup>

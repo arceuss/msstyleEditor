@@ -23,11 +23,8 @@ namespace msstyleEditor.Dialogs
             m_style = style;
 
             classView.BeginUpdate();
-            if (m_style == null)
-            {
-                classView.Nodes.Clear();
-            }
-            else
+            classView.Nodes.Clear();
+            if (m_style != null)
             {
                 foreach (var cls in m_style.Classes)
                 {
@@ -108,6 +105,13 @@ namespace msstyleEditor.Dialogs
                             var partNode = new TreeNode(part.Value.PartName);
                             partNode.Tag = part.Value;
 
+                            foreach (var state in part.Value.States)
+                            {
+                                var stateNode = new TreeNode(state.Value.StateName);
+                                stateNode.Tag = state.Value;
+                                partNode.Nodes.Add(stateNode);
+                            }
+
                             clsNode.Nodes.Add(partNode);
                         }
                     }
@@ -166,6 +170,68 @@ namespace msstyleEditor.Dialogs
             {
                 OnSelectionChanged(sender, e);
             }
+        }
+
+        public TreeNode AddClassNode(StyleClass cls)
+        {
+            var clsNode = new TreeNode(cls.ClassName);
+            clsNode.Tag = cls;
+
+            // Mirror the regular class tree population so newly added classes
+            // immediately show their default parts/states.
+            foreach (var part in cls.Parts)
+            {
+                var partNode = new TreeNode(part.Value.PartName);
+                partNode.Tag = part.Value;
+
+                foreach (var state in part.Value.States)
+                {
+                    var stateNode = new TreeNode(state.Value.StateName);
+                    stateNode.Tag = state.Value;
+                    partNode.Nodes.Add(stateNode);
+                }
+
+                clsNode.Nodes.Add(partNode);
+            }
+
+            classView.Nodes.Add(clsNode);
+            classView.Sort();
+            clsNode.Expand();
+            classView.SelectedNode = clsNode;
+            return clsNode;
+        }
+
+        public TreeNode AddPartNode(TreeNode classNode, StylePart part)
+        {
+            var partNode = new TreeNode(part.PartName);
+            partNode.Tag = part;
+
+            foreach (var state in part.States)
+            {
+                var stateNode = new TreeNode(state.Value.StateName);
+                stateNode.Tag = state.Value;
+                partNode.Nodes.Add(stateNode);
+            }
+
+            classNode.Nodes.Add(partNode);
+            classNode.Expand();
+            classView.SelectedNode = partNode;
+            return partNode;
+        }
+
+        public TreeNode AddStateNode(TreeNode partNode, StyleState state)
+        {
+            var stateNode = new TreeNode(state.StateName);
+            stateNode.Tag = state;
+            partNode.Nodes.Add(stateNode);
+            partNode.Expand();
+            classView.SelectedNode = stateNode;
+            return stateNode;
+        }
+
+        public TreeNode SelectedNode
+        {
+            get { return classView.SelectedNode; }
         }
     }
 }

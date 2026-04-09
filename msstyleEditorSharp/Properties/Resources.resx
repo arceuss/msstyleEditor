@@ -124,4 +124,16 @@
   <data name="Stop32" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\Icons\Stop32.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
   </data>
+  <data name="Edit16" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>..\Icons\edit16.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
+  <data name="Edit32" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>..\Icons\edit32.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
+  <data name="Placeholder16" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>..\Icons\placeholder16.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
+  <data name="Placeholder32" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>..\Icons\placeholder32.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
 </root>

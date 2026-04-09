@@ -63,6 +63,28 @@ namespace libmsstyle
 
         private ushort m_resourceLanguage;
 
+        private bool m_classmapDirty = false;
+        public void MarkClassmapDirty() { m_classmapDirty = true; }
+
+        private byte[] m_originalCmap;
+        private int m_cmapTotalEntries;
+        private int m_originalClassCount;
+
+        private byte[] m_originalBcmap;
+
+        // XP-specific: maps image file paths (from INI) to BITMAP resource names
+        private Dictionary<string, string> m_xpImageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // XP-specific: the selected color scheme
+        private XpColorScheme m_xpColorScheme;
+
+        // XP-specific: all available color schemes
+        private List<XpColorScheme> m_xpColorSchemes;
+        public List<XpColorScheme> XpColorSchemes
+        {
+            get { return m_xpColorSchemes; }
+        }
+
         public VisualStyle()
         {
             m_stylePath = null;
@@ -140,6 +162,17 @@ namespace libmsstyle
                 Win32Api.EndUpdateResource(updateHandle, true);
                 File.Delete(file);
                 throw new IOException("Could not save resources!");
+            }
+
+            if (m_classmapDirty)
+            {
+                if (!SaveClassmap(moduleHandle, updateHandle))
+                {
+                    Win32Api.FreeLibrary(moduleHandle);
+                    Win32Api.EndUpdateResource(updateHandle, true);
+                    File.Delete(file);
+                    throw new IOException("Could not save class map!");
+                }
             }
 
             if (!SaveProperties(moduleHandle, updateHandle))
@@ -233,11 +266,11 @@ namespace libmsstyle
             MemoryStream ms = new MemoryStream(4096);
             BinaryWriter bw = new BinaryWriter(ms);
 
-            foreach (var cls in m_classes)
+            foreach (var cls in m_classes.OrderBy(c => c.Key))
             {
-                foreach (var part in cls.Value.Parts)
+                foreach (var part in cls.Value.Parts.OrderBy(p => p.Key))
                 {
-                    foreach (var state in part.Value.States)
+                    foreach (var state in part.Value.States.OrderBy(s => s.Key))
                     {
                         state.Value.Properties.Sort(Comparer<StyleProperty>.Create(
                             (p1, p2) =>
@@ -334,6 +367,65 @@ namespace libmsstyle
             return Win32Api.UpdateResource(updateHandle, "AMAP", "AMAP", lid, data, (uint)data.Length);
 
         }
+
+        private bool SaveClassmap(IntPtr moduleHandle, IntPtr updateHandle)
+        {
+            // Preserve the original CMAP and append only new classes.
+            // The original CMAP contains empty entries that act as separators;
+            // LoadClassmap assigns sequential IDs skipping empties, and the
+            // VARIANT properties reference those same IDs. We must not
+            // reorder or compact the original entries.
+            var ms = new MemoryStream();
+
+            // Write original CMAP bytes as-is
+            if (m_originalCmap != null)
+            {
+                ms.Write(m_originalCmap, 0, m_originalCmap.Length);
+            }
+
+            // Append new classes (those with IDs beyond what was loaded from original CMAP)
+            var newClasses = m_classes
+                .Where(kv => kv.Key >= m_originalClassCount)
+                .OrderBy(kv => kv.Key);
+
+            foreach (var kv in newClasses)
+            {
+                byte[] encoded = Encoding.Unicode.GetBytes(kv.Value.ClassName);
+                ms.Write(encoded, 0, encoded.Length);
+                ms.WriteByte(0); // null terminator (2 bytes for UTF-16)
+                ms.WriteByte(0);
+            }
+
+            ushort lid = ResourceAccess.GetFirstLanguageId(moduleHandle, "CMAP", "CMAP");
+            if (lid == 0xFFFF)
+            {
+                lid = m_resourceLanguage;
+            }
+            byte[] data = ms.ToArray();
+            if (!Win32Api.UpdateResource(updateHandle, "CMAP", "CMAP", lid, data, (uint)data.Length))
+                return false;
+
+            // Update BCMAP: preserve original entries and append -1 for each new class.
+            // BCMAP has one int32 per class (except the last 3 special classes).
+            if (m_originalBcmap != null && newClasses.Any())
+            {
+                var bcms = new MemoryStream();
+                bcms.Write(m_originalBcmap, 0, m_originalBcmap.Length);
+                foreach (var kv in newClasses)
+                {
+                    // -1 means no parent class
+                    bcms.Write(BitConverter.GetBytes(-1), 0, 4);
+                }
+                ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
+                if (bcmapLid == 0xFFFF)
+                    bcmapLid = m_resourceLanguage;
+                byte[] bcmapData = bcms.ToArray();
+                if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
+                    return false;
+            }
+
+            return true;
+        }
         public void Load(string file)
         {
             m_moduleHandle = Win32Api.LoadLibraryEx(file, IntPtr.Zero, Win32Api.LoadLibraryFlags.LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE);
@@ -345,10 +437,24 @@ namespace libmsstyle
             byte[] cmap = ResourceAccess.GetResource(m_moduleHandle, "CMAP", "CMAP");
             if (cmap == null)
             {
-                throw new Exception("Style contains no class map!");
+                // No CMAP — try XP format (TEXTFILE resources)
+                byte[] themesIni = ResourceAccess.GetResource(m_moduleHandle, "TEXTFILE", "THEMES_INI");
+                if (themesIni == null)
+                {
+                    throw new Exception("Style contains no class map and no THEMES_INI!");
+                }
+
+                LoadXp(themesIni);
+                m_stylePath = file;
+                return;
             }
 
             LoadClassmap(cmap);
+
+            // Load BCMAP (Base Class Map) for class inheritance.
+            // BCMAP is an int32[] where each entry is the parent classID or -1.
+            // It has exactly (CMAP non-empty count - 3) entries.
+            m_originalBcmap = ResourceAccess.GetResource(m_moduleHandle, "BCMAP", "BCMAP");
 
             // With the class map in place, we can reason about the platform.
             m_platform = DeterminePlatform();
@@ -409,16 +515,97 @@ namespace libmsstyle
             m_stylePath = file;
         }
 
+        void LoadXp(byte[] themesIniData)
+        {
+            m_platform = Platform.WinXP;
+            m_xpColorSchemes = XpStyleIniParser.ParseThemesIni(themesIniData);
+
+            if (m_xpColorSchemes.Count == 0)
+            {
+                throw new Exception("No color schemes found in THEMES_INI!");
+            }
+
+            // Default to first scheme; caller can call LoadXpWithScheme() to switch
+            LoadXpWithScheme(m_xpColorSchemes[0]);
+        }
+
+        /// <summary>
+        /// Loads or reloads the XP style with the specified color scheme.
+        /// Called initially from LoadXp() and can be called again when user selects a different scheme.
+        /// </summary>
+        public void LoadXpWithScheme(XpColorScheme scheme)
+        {
+            m_xpColorScheme = scheme;
+            m_classes.Clear();
+            m_xpImageMap.Clear();
+            m_numProps = 0;
+
+            byte[] iniData = ResourceAccess.GetResource(m_moduleHandle, "TEXTFILE", scheme.IniResourceName);
+            if (iniData == null)
+            {
+                throw new Exception($"Could not load INI resource '{scheme.IniResourceName}'!");
+            }
+
+            XpStyleIniParser.ParseSchemeIni(iniData, m_classes);
+
+            // Build image map: scan all FILENAME properties and map file paths to resource names
+            foreach (var cls in m_classes)
+            {
+                foreach (var part in cls.Value.Parts)
+                {
+                    foreach (var state in part.Value.States)
+                    {
+                        foreach (var prop in state.Value.Properties)
+                        {
+                            if (prop.Header.typeID == (int)IDENTIFIER.FILENAME)
+                            {
+                                string filePath = prop.GetValue() as string;
+                                if (!string.IsNullOrEmpty(filePath))
+                                {
+                                    string resName = XpStyleIniParser.ImageFileToResourceName(filePath);
+                                    m_xpImageMap[filePath] = resName;
+                                }
+                            }
+                            ++m_numProps;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Loads a BITMAP resource from the PE for XP styles.
+        /// RT_BITMAP resources contain raw DIB data (no BITMAPFILEHEADER).
+        /// Converts to PNG bytes with proper 32bpp alpha support.
+        /// </summary>
+        public byte[] GetXpBitmapResource(string resourceName)
+        {
+            if (string.IsNullOrEmpty(resourceName))
+                return null;
+
+            // RT_BITMAP = "#2"
+            byte[] dib = ResourceAccess.GetResource(m_moduleHandle, "#2", resourceName);
+            if (dib == null)
+                return null;
+
+            return ImageConverter.ConvertDibToPng(dib);
+        }
+
         void LoadClassmap(byte[] cmap)
         {
+            m_originalCmap = (byte[])cmap.Clone();
+
             int first = 0;
             int numFound = 0;
+            int totalEntries = 0;
 
             for (int i = 0; i < cmap.Length; i += 2)
             {
                 if (cmap[i] == 0 &&
                     cmap[i + 1] == 0)
                 {
+                    totalEntries++;
+
                     // we found the terminator and
                     // have a non-empty string
                     if (i - first > 2)
@@ -433,6 +620,9 @@ namespace libmsstyle
                     first = i + 2;
                 }
             }
+
+            m_cmapTotalEntries = totalEntries;
+            m_originalClassCount = numFound;
         }
 
         void LoadProperties(byte[] pmap)
@@ -589,8 +779,25 @@ namespace libmsstyle
                 case (int)IDENTIFIER.FILENAME:
                 case (int)IDENTIFIER.FILENAME_LITE:
                     {
-                        byte[] data = ResourceAccess.GetResource(m_moduleHandle, "IMAGE", (uint)prop.Header.shortFlag);
-                        return new StyleResource(data, prop.Header.shortFlag, StyleResourceType.Image);
+                        // XP: FILENAME value is a string path, load from BITMAP resource
+                        if (m_platform == Platform.WinXP)
+                        {
+                            string filePath = prop.GetValue() as string;
+                            if (string.IsNullOrEmpty(filePath))
+                                return null;
+
+                            string resName;
+                            if (!m_xpImageMap.TryGetValue(filePath, out resName))
+                                resName = XpStyleIniParser.ImageFileToResourceName(filePath);
+
+                            byte[] data = GetXpBitmapResource(resName);
+                            // Use the hash code as a pseudo resource ID for XP
+                            int resId = resName.GetHashCode();
+                            return new StyleResource(data, resId, StyleResourceType.Image);
+                        }
+
+                        byte[] imgData = ResourceAccess.GetResource(m_moduleHandle, "IMAGE", (uint)prop.Header.shortFlag);
+                        return new StyleResource(imgData, prop.Header.shortFlag, StyleResourceType.Image);
                     }
                 case (int)IDENTIFIER.DISKSTREAM:
                     {
