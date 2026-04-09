@@ -108,6 +108,7 @@ namespace msstyleEditor
 
         private string m_customTheme;
         public string Theme { get { return m_customTheme; } }
+        private string m_customThemeFolder;
 
         public ThemeManager()
         {
@@ -139,13 +140,29 @@ namespace msstyleEditor
             // This means /Desktop/, /AppData/, /Temp/, etc. cannot be used; weird...
             // A writeable alternative that doesn't crash Win8.1 is anything inside /Users/Public/.
             var pubDoc = Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments);
-            var path = String.Format("{0}\\tmp{1:D5}.msstyles", pubDoc, m_rng.Next(0, 10000));
+            var themeFolder = CreateStagedThemeFolder(pubDoc);
+            var themeFileName = Path.GetFileName(style.Path);
+            if (String.IsNullOrWhiteSpace(themeFileName))
+            {
+                themeFileName = String.Format("tmp{0:D5}.msstyles", m_rng.Next(0, 10000));
+            }
+            var path = Path.Combine(themeFolder, themeFileName);
 
             // Save original system metrics BEFORE switching the theme,
             // so we capture the truly original values and not partially-changed ones.
             SaveOriginalMetrics();
 
-            style.Save(path, true);
+            try
+            {
+                style.Save(path, true);
+                CopyThemeCompanionResources(style.Path, themeFolder);
+            }
+            catch
+            {
+                CleanupStagedTheme(themeFolder, path);
+                throw;
+            }
+
             uint hr = SetSystemVisualStyle(path,"NormalColor", "NormalSize", 0);
             if (hr != 0)
             {
@@ -164,22 +181,16 @@ namespace msstyleEditor
                 // 0x90004004 => COM error E_ABORT => Malformed style, OS can't read it
                 // 0x90070490 => WIN32 error ERROR_NOT_FOUND ("Element not found.") => Resource missing
 
-                File.Delete(path);
+                CleanupStagedTheme(themeFolder, path);
 
                 throw new SystemException($"Failed to apply the theme as the OS rejected it! Message:\r\n\r\n{msg}");
             }
             else
             {
-                if (!String.IsNullOrEmpty(m_customTheme))
-                {
-                    try
-                    {
-                        File.Delete(m_customTheme);
-                    }
-                    catch (Exception) { }
-                }
+                DeleteCustomThemeFiles();
 
                 m_customTheme = path;
+                m_customThemeFolder = themeFolder;
                 m_themeInUse = true;
 
                 // Wait for the OS to finish applying the visual style.
@@ -210,11 +221,91 @@ namespace msstyleEditor
             try
             {
                 Thread.Sleep(250); // the OS takes a while to switch visual style
-                File.Delete(m_customTheme);
+                DeleteCustomThemeFiles();
             }
             catch (Exception) { }
 
             m_themeInUse = false;
+        }
+
+        private string CreateStagedThemeFolder(string baseFolder)
+        {
+            var stagingRoot = Path.Combine(baseFolder, "msstyleEditor");
+            Directory.CreateDirectory(stagingRoot);
+
+            string folder;
+            do
+            {
+                folder = Path.Combine(stagingRoot, String.Format("ThemePreview-{0:D5}", m_rng.Next(0, 100000)));
+            }
+            while (Directory.Exists(folder));
+
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+
+        private void CopyThemeCompanionResources(string originalThemePath, string stagedThemeFolder)
+        {
+            if (String.IsNullOrWhiteSpace(originalThemePath) || String.IsNullOrWhiteSpace(stagedThemeFolder))
+            {
+                return;
+            }
+
+            var originalThemeFolder = Path.GetDirectoryName(originalThemePath);
+            if (String.IsNullOrWhiteSpace(originalThemeFolder) || !Directory.Exists(originalThemeFolder))
+            {
+                return;
+            }
+
+            var sourceShellFolder = Path.Combine(originalThemeFolder, "Shell");
+            if (!Directory.Exists(sourceShellFolder))
+            {
+                return;
+            }
+
+            CopyDirectoryRecursive(sourceShellFolder, Path.Combine(stagedThemeFolder, "Shell"));
+        }
+
+        private void CopyDirectoryRecursive(string sourceFolder, string targetFolder)
+        {
+            Directory.CreateDirectory(targetFolder);
+
+            foreach (var file in Directory.GetFiles(sourceFolder))
+            {
+                var targetPath = Path.Combine(targetFolder, Path.GetFileName(file));
+                File.Copy(file, targetPath, true);
+            }
+
+            foreach (var directory in Directory.GetDirectories(sourceFolder))
+            {
+                var targetPath = Path.Combine(targetFolder, Path.GetFileName(directory));
+                CopyDirectoryRecursive(directory, targetPath);
+            }
+        }
+
+        private void DeleteCustomThemeFiles()
+        {
+            CleanupStagedTheme(m_customThemeFolder, m_customTheme);
+            m_customThemeFolder = null;
+            m_customTheme = null;
+        }
+
+        private static void CleanupStagedTheme(string themeFolder, string themePath)
+        {
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(themeFolder) && Directory.Exists(themeFolder))
+                {
+                    Directory.Delete(themeFolder, true);
+                    return;
+                }
+
+                if (!String.IsNullOrWhiteSpace(themePath) && File.Exists(themePath))
+                {
+                    File.Delete(themePath);
+                }
+            }
+            catch (Exception) { }
         }
 
         public bool GetActiveTheme(out string theme, out string color, out string size)

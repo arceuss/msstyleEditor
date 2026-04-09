@@ -13,6 +13,8 @@ namespace msstyleEditor.PropView
 {
     internal sealed class FontResourceEditor : UITypeEditor
     {
+        private const string DefaultFontResourceString = "Segoe UI, 9, Quality:ClearType";
+
         public override UITypeEditorEditStyle GetEditStyle(ITypeDescriptorContext context)
         {
             return UITypeEditorEditStyle.DropDown;
@@ -42,6 +44,20 @@ namespace msstyleEditor.PropView
                         context.PropertyDescriptor.SetValue(context.Instance, dropDown.SelectedResourceId);
                         context.OnComponentChanged();
                         return dropDown.SelectedResourceId;
+                    }
+
+                    if (dropDown.Action == FontResourceDropDownAction.AddNewResource)
+                    {
+                        int sourceResourceId = dropDown.SelectedResourceId > 0
+                            ? dropDown.SelectedResourceId
+                            : currentResourceId;
+
+                        int newResourceId = FindNextAvailableResourceId(propDesc.Style);
+                        propDesc.Style.PreferredStringTable[newResourceId] = ResolveSeedFontString(propDesc.Style, sourceResourceId);
+
+                        context.PropertyDescriptor.SetValue(context.Instance, newResourceId);
+                        context.OnComponentChanged();
+                        return newResourceId;
                     }
 
                     if (dropDown.Action != FontResourceDropDownAction.EditResource)
@@ -98,12 +114,38 @@ namespace msstyleEditor.PropView
                 return currentResourceId;
             }
 
+            return FindNextAvailableResourceId(style);
+        }
+
+        private static int FindNextAvailableResourceId(VisualStyle style)
+        {
             if (style.PreferredStringTable == null || style.PreferredStringTable.Count == 0)
             {
                 return 1;
             }
 
-            return style.PreferredStringTable.Keys.Max() + 1;
+            var assignedIds = new HashSet<int>(style.PreferredStringTable.Keys.Where(id => id > 0));
+            int nextId = 1;
+            while (assignedIds.Contains(nextId))
+            {
+                nextId++;
+            }
+
+            return nextId;
+        }
+
+        private static string ResolveSeedFontString(VisualStyle style, int sourceResourceId)
+        {
+            string seedFontString;
+            if (sourceResourceId > 0 &&
+                style.PreferredStringTable != null &&
+                style.PreferredStringTable.TryGetValue(sourceResourceId, out seedFontString) &&
+                !String.IsNullOrWhiteSpace(seedFontString))
+            {
+                return seedFontString;
+            }
+
+            return DefaultFontResourceString;
         }
     }
 
@@ -111,6 +153,7 @@ namespace msstyleEditor.PropView
     {
         None,
         AssignExisting,
+        AddNewResource,
         EditResource,
     }
 
@@ -131,6 +174,7 @@ namespace msstyleEditor.PropView
         private readonly int m_currentResourceId;
         private readonly ListBox m_listBox = new ListBox();
         private readonly Button m_assignButton = new Button();
+        private readonly Button m_addButton = new Button();
         private readonly Button m_editButton = new Button();
 
         public FontResourceDropDownAction Action { get; private set; }
@@ -165,7 +209,7 @@ namespace msstyleEditor.PropView
             var label = new Label
             {
                 AutoSize = true,
-                Text = "Select an existing font resource or open the editor.",
+                Text = "Select an existing font resource, add a new one, or open the editor.",
                 Margin = new Padding(0, 0, 0, 6),
             };
             root.Controls.Add(label, 0, 0);
@@ -189,6 +233,11 @@ namespace msstyleEditor.PropView
             m_assignButton.AutoSize = true;
             m_assignButton.Click += OnAssignExisting;
             buttonPanel.Controls.Add(m_assignButton);
+
+            m_addButton.Text = "Add New";
+            m_addButton.AutoSize = true;
+            m_addButton.Click += OnAddNewResource;
+            buttonPanel.Controls.Add(m_addButton);
 
             m_editButton.AutoSize = true;
             m_editButton.Click += OnEditResource;
@@ -243,6 +292,12 @@ namespace msstyleEditor.PropView
         {
             Action = FontResourceDropDownAction.EditResource;
             EditTargetResourceId = SelectedResourceId > 0 ? SelectedResourceId : m_currentResourceId;
+            m_editorService.CloseDropDown();
+        }
+
+        private void OnAddNewResource(object sender, EventArgs e)
+        {
+            Action = FontResourceDropDownAction.AddNewResource;
             m_editorService.CloseDropDown();
         }
 
