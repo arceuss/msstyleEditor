@@ -77,6 +77,7 @@ namespace libmsstyle
         private byte[] m_originalBcmap;
         private int m_bcmapClassIdOffset = 0;
         private int m_bcmapEntryCount = 0;
+        private bool m_bcmapHasCountField = false;
 
         // XP-specific: maps image file paths (from INI) to BITMAP resource names
         private Dictionary<string, string> m_xpImageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -582,18 +583,23 @@ namespace libmsstyle
             if (!Win32Api.UpdateResource(updateHandle, "CMAP", "CMAP", lid, data, (uint)data.Length))
                 return false;
 
-            // Update BCMAP using uxtheme-compatible format:
-            // int32 count + count int32 parent indices.
+            // Update BCMAP: preserve original format (with or without count field).
             if (m_originalBcmap != null && newClasses.Count > 0)
             {
                 int originalEntryCount;
                 List<int> originalParents;
-                if (TryParseBaseClassMap(m_originalBcmap, m_originalClassCount, out originalEntryCount, out originalParents))
+                bool hasCountField;
+                if (TryParseBaseClassMap(m_originalBcmap, m_originalClassCount, out originalEntryCount, out originalParents, out hasCountField))
                 {
                     int updatedEntryCount = originalEntryCount + newClasses.Count;
                     var bcms = new MemoryStream();
 
-                    bcms.Write(BitConverter.GetBytes(updatedEntryCount), 0, 4);
+                    // Only write count if original had it (for compatibility with WSB and other tools)
+                    if (hasCountField)
+                    {
+                        bcms.Write(BitConverter.GetBytes(updatedEntryCount), 0, 4);
+                    }
+
                     foreach (int parentIndex in originalParents)
                     {
                         bcms.Write(BitConverter.GetBytes(parentIndex), 0, 4);
@@ -879,10 +885,16 @@ namespace libmsstyle
             return mappedIndex < currentEntryCount;
         }
 
-        bool TryParseBaseClassMap(byte[] bcmap, int classCount, out int entryCount, out List<int> parents)
+        /// <summary>
+        /// Parses BCMAP and detects whether it has a count field or is legacy format (raw array).
+        /// Legacy format is used by WSB and other tools - just int32[] parent indices without count.
+        /// New format includes an int32 count prefix.
+        /// </summary>
+        bool TryParseBaseClassMap(byte[] bcmap, int classCount, out int entryCount, out List<int> parents, out bool hasCountField)
         {
             entryCount = 0;
             parents = new List<int>();
+            hasCountField = false;
 
             if (bcmap == null || bcmap.Length < 4)
             {
@@ -890,33 +902,55 @@ namespace libmsstyle
             }
 
             int declaredEntryCount = BitConverter.ToInt32(bcmap, 0);
-            if (declaredEntryCount < 0)
-            {
-                return false;
-            }
+            int totalInts = bcmap.Length / 4;
 
-            int maxAvailable = (bcmap.Length - 4) / 4;
-            int clampedDeclaredCount = Math.Min(declaredEntryCount, maxAvailable);
-            entryCount = clampedDeclaredCount;
+            // Key insight: if first 4 bytes as count gives offset close to 4 (special classes),
+            // it's likely a count. Otherwise treat as legacy format.
+            // Special classes: "", "Scr", 0 (3 classes at the end that don't have BCMAP entries)
+            int offsetWithCount = classCount - declaredEntryCount;
+            int offsetWithoutCount = classCount - (totalInts - 1); // -1 because one int is the count itself
 
-            // Legacy compatibility:
-            // older msstyleEditor builds appended BCMAP parents but forgot to update
-            // the count in the header. If we detect that shape, trust the payload size.
-            if (maxAvailable > clampedDeclaredCount)
+            // The "correct" offset for BCMAP is 4 (3 special classes: "", "Scr", and one more)
+            // But we allow some flexibility for edge cases
+            bool countOffsetValid = offsetWithCount == 4 || offsetWithCount == 3 || offsetWithCount == 5;
+            bool noCountOffsetValid = offsetWithoutCount == 4 || offsetWithoutCount == 3 || offsetWithoutCount == 5;
+
+            // Additional check: if declaredCount * 4 + 4 exactly equals bcmap.Length, it has a count
+            bool countMatchesLength = declaredEntryCount >= 0 && (declaredEntryCount * 4 + 4) == bcmap.Length;
+
+            // Determine format
+            if (countOffsetValid && (countMatchesLength || declaredEntryCount > 0 && declaredEntryCount < classCount))
             {
-                int declaredOffset = classCount - clampedDeclaredCount;
-                int availableOffset = classCount - maxAvailable;
-                if (declaredOffset != 4 && availableOffset == 4)
+                // Has count field
+                hasCountField = true;
+                entryCount = Math.Min(declaredEntryCount, (bcmap.Length - 4) / 4);
+
+                for (int i = 0; i < entryCount; ++i)
                 {
-                    entryCount = maxAvailable;
+                    parents.Add(BitConverter.ToInt32(bcmap, 4 + i * 4));
                 }
+                return true;
+            }
+            else if (noCountOffsetValid || !countOffsetValid)
+            {
+                // Legacy format: no count field, just raw parent indices
+                hasCountField = false;
+                entryCount = totalInts;
+
+                for (int i = 0; i < entryCount; ++i)
+                {
+                    parents.Add(BitConverter.ToInt32(bcmap, i * 4));
+                }
+                return true;
             }
 
+            // Fallback: assume legacy format if we can't decide
+            hasCountField = false;
+            entryCount = totalInts;
             for (int i = 0; i < entryCount; ++i)
             {
-                parents.Add(BitConverter.ToInt32(bcmap, 4 + i * 4));
+                parents.Add(BitConverter.ToInt32(bcmap, i * 4));
             }
-
             return true;
         }
 
@@ -924,14 +958,17 @@ namespace libmsstyle
         {
             int entryCount;
             List<int> parents;
-            if (!TryParseBaseClassMap(bcmap, m_classes.Count, out entryCount, out parents))
+            bool hasCountField;
+            if (!TryParseBaseClassMap(bcmap, m_classes.Count, out entryCount, out parents, out hasCountField))
             {
                 m_bcmapClassIdOffset = 0;
                 m_bcmapEntryCount = 0;
+                m_bcmapHasCountField = false;
                 return;
             }
 
             m_bcmapEntryCount = entryCount;
+            m_bcmapHasCountField = hasCountField;
 
             // BCMAP indices are in the internal class index space used by uxtheme.
             // Map them into our CMAP-based class IDs using a count-derived offset.
