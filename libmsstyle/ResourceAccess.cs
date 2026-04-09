@@ -135,6 +135,11 @@ namespace libmsstyle
 
             public static bool Update(IntPtr moduleHandle, IntPtr updateHandle, Dictionary<int, string> table, ushort langId = 0)
             {
+                var orderedEntries = table
+                    .Where(item => item.Key >= 0)
+                    .OrderBy(item => item.Key)
+                    .ToList();
+
                 MemoryStream ms = new MemoryStream();
                 BinaryWriter bw = new BinaryWriter(ms, Encoding.Unicode);
 
@@ -142,11 +147,11 @@ namespace libmsstyle
                 int currentBucketIndex = 0;
 
                 int currentBucket = 0;
-                int previousBucket = (table.Count > 0) ? (table.First().Key / 16) + 1 : 0;
+                int previousBucket = (orderedEntries.Count > 0) ? (orderedEntries[0].Key / 16) + 1 : 0;
 
                 List<int> bucketsTouched = new List<int>();
 
-                foreach (var item in table)
+                foreach (var item in orderedEntries)
                 {
                     // get current bucket
                     FLAT_TO_BUCKETED(item.Key, ref currentBucket, ref currentBucketIndex);

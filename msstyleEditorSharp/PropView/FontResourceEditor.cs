@@ -14,6 +14,7 @@ namespace msstyleEditor.PropView
     internal sealed class FontResourceEditor : UITypeEditor
     {
         private const string DefaultFontResourceString = "Segoe UI, 9, Quality:ClearType";
+        private const int DefaultFontResourceStartId = 501;
 
         public override UITypeEditorEditStyle GetEditStyle(ITypeDescriptorContext context)
         {
@@ -121,11 +122,19 @@ namespace msstyleEditor.PropView
         {
             if (style.PreferredStringTable == null || style.PreferredStringTable.Count == 0)
             {
-                return 1;
+                return DefaultFontResourceStartId;
             }
 
             var assignedIds = new HashSet<int>(style.PreferredStringTable.Keys.Where(id => id > 0));
-            int nextId = 1;
+            var existingFontIds = StringTable.FilterFonts(style.PreferredStringTable)
+                .Keys
+                .Where(id => id > 0)
+                .ToList();
+
+            int nextId = existingFontIds.Count > 0
+                ? existingFontIds.Max() + 1
+                : Math.Max(DefaultFontResourceStartId, assignedIds.Max() + 1);
+
             while (assignedIds.Contains(nextId))
             {
                 nextId++;
@@ -317,6 +326,8 @@ namespace msstyleEditor.PropView
     {
         private sealed class FontResourceDefinition
         {
+            private const string NoQualityDisplayName = "(none)";
+
             private static readonly Dictionary<string, byte> s_qualityByName = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase)
             {
                 ["default"] = 0,
@@ -333,13 +344,10 @@ namespace msstyleEditor.PropView
 
             private static readonly Dictionary<byte, string> s_nameByQuality = new Dictionary<byte, string>
             {
-                [0] = "Default",
-                [1] = "Draft",
-                [2] = "Proof",
                 [3] = "NonAntialiased",
                 [4] = "Antialiased",
                 [5] = "ClearType",
-                [6] = "ClearTypeNatural",
+                [6] = "ClearType-Natural",
             };
 
             public string FamilyName { get; set; } = "Segoe UI";
@@ -347,9 +355,16 @@ namespace msstyleEditor.PropView
             public bool Bold { get; set; }
             public bool Italic { get; set; }
             public bool Underline { get; set; }
-            public byte Quality { get; set; } = 5;
+            public byte? Quality { get; set; } = 5;
 
-            public static IReadOnlyList<string> QualityNames => s_nameByQuality.Values.ToList();
+            public static IReadOnlyList<string> QualityNames => new[]
+            {
+                NoQualityDisplayName,
+                "NonAntialiased",
+                "Antialiased",
+                "ClearType",
+                "ClearType-Natural",
+            };
 
             public static FontResourceDefinition Parse(string fontString)
             {
@@ -420,7 +435,11 @@ namespace msstyleEditor.PropView
                     parts.Add("Underline");
                 }
 
-                parts.Add($"Quality:{GetQualityName(Quality)}");
+                if (Quality.HasValue)
+                {
+                    parts.Add($"Quality:{GetQualityName(Quality.Value)}");
+                }
+
                 return String.Join(", ", parts);
             }
 
@@ -459,9 +478,16 @@ namespace msstyleEditor.PropView
                     : quality.ToString(CultureInfo.InvariantCulture);
             }
 
-            public static byte ParseQuality(string value)
+            public static byte? ParseQuality(string value)
             {
                 string trimmed = value.Trim();
+                if (String.IsNullOrEmpty(trimmed) ||
+                    trimmed.Equals(NoQualityDisplayName, StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.Equals("default", StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
                 if (Byte.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numeric))
                 {
                     return numeric;
@@ -469,8 +495,15 @@ namespace msstyleEditor.PropView
 
                 string normalized = trimmed.Replace(" ", String.Empty);
                 return s_qualityByName.TryGetValue(normalized, out var namedQuality)
-                    ? namedQuality
-                    : (byte)5;
+                    ? (namedQuality == 0 ? (byte?)null : namedQuality)
+                    : (byte?)5;
+            }
+
+            public static string GetQualityDisplayName(byte? quality)
+            {
+                return quality.HasValue
+                    ? GetQualityName(quality.Value)
+                    : NoQualityDisplayName;
             }
         }
 
@@ -744,7 +777,7 @@ namespace msstyleEditor.PropView
             m_styleCombo.SelectedIndex = GetStyleIndex(definition.Bold, definition.Italic);
             m_sizeCombo.Text = definition.SizeInPoints.ToString(CultureInfo.InvariantCulture);
             m_underlineCheck.Checked = definition.Underline;
-            m_qualityCombo.SelectedItem = FontResourceDefinition.GetQualityName(definition.Quality);
+            m_qualityCombo.SelectedItem = FontResourceDefinition.GetQualityDisplayName(definition.Quality);
 
             if (m_qualityCombo.SelectedIndex < 0 && m_qualityCombo.Items.Count > 0)
             {
@@ -794,7 +827,7 @@ namespace msstyleEditor.PropView
                 Bold = m_styleCombo.SelectedIndex == 1 || m_styleCombo.SelectedIndex == 3,
                 Italic = m_styleCombo.SelectedIndex == 2 || m_styleCombo.SelectedIndex == 3,
                 Underline = m_underlineCheck.Checked,
-                Quality = FontResourceDefinition.ParseQuality(Convert.ToString(m_qualityCombo.SelectedItem ?? "ClearType", CultureInfo.InvariantCulture)),
+                Quality = FontResourceDefinition.ParseQuality(Convert.ToString(m_qualityCombo.SelectedItem ?? "(none)", CultureInfo.InvariantCulture)),
             };
         }
 
