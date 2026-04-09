@@ -92,6 +92,7 @@ namespace msstyleEditor
             this.statusStrip = new System.Windows.Forms.StatusStrip();
             this.lbStatusMessage = new System.Windows.Forms.ToolStripStatusLabel();
             this.lbImageInfo = new System.Windows.Forms.ToolStripStatusLabel();
+            this.lbImageZoom = new System.Windows.Forms.ToolStripStatusLabel();
             this.lbStylePlatform = new System.Windows.Forms.ToolStripStatusLabel();
             this.dockPanel = new WeifenLuo.WinFormsUI.Docking.DockPanel();
             this.ribbonButton3 = new System.Windows.Forms.RibbonButton();
@@ -616,6 +617,7 @@ namespace msstyleEditor
             this.statusStrip.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.lbStatusMessage,
             this.lbImageInfo,
+            this.lbImageZoom,
             this.lbStylePlatform});
             this.statusStrip.Location = new System.Drawing.Point(0, 540);
             this.statusStrip.Name = "statusStrip";
@@ -636,6 +638,13 @@ namespace msstyleEditor
             this.lbImageInfo.Name = "lbImageInfo";
             this.lbImageInfo.Size = new System.Drawing.Size(4, 17);
             this.lbImageInfo.Visible = false;
+            // 
+            // lbImageZoom
+            // 
+            this.lbImageZoom.BorderSides = System.Windows.Forms.ToolStripStatusLabelBorderSides.Left;
+            this.lbImageZoom.Name = "lbImageZoom";
+            this.lbImageZoom.Size = new System.Drawing.Size(4, 17);
+            this.lbImageZoom.Visible = false;
             // 
             // lbStylePlatform
             // 
@@ -757,6 +766,7 @@ namespace msstyleEditor
         private System.Windows.Forms.RibbonPanel ribbonPanelSearch;
         private System.Windows.Forms.RibbonButton btSearch;
         private System.Windows.Forms.ToolStripStatusLabel lbImageInfo;
+        private System.Windows.Forms.ToolStripStatusLabel lbImageZoom;
         private System.Windows.Forms.RibbonButton btFileSaveWithMUI;
         private WeifenLuo.WinFormsUI.Docking.DockPanel dockPanel;
         private System.Windows.Forms.RibbonPanel ribbonPanelWindows;
