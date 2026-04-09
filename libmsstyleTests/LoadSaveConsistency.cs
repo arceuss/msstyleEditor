@@ -78,8 +78,94 @@ namespace libmsstyleTests
             { 
                 File.Delete("tmp.msstyles");
                 File.Delete("tmp2.msstyles");
+                File.Delete("tmp_addclass.msstyles");
             }
             catch (Exception) { }
+        }
+
+        [TestMethod]
+        public void VerifyAddClassWithBaseClassRoundTrip()
+        {
+            const string sourceFile = @"..\..\..\styles\w11_luna_mod\Luna.msstyles";
+
+            using (var style = new VisualStyle())
+            using (var reloaded = new VisualStyle())
+            {
+                style.Load(sourceFile);
+
+                int baseClockId = style.Classes
+                    .Where(kv => kv.Value.ClassName == "TrayNotify::Clock")
+                    .Select(kv => kv.Key)
+                    .First();
+
+                int baseVertButtonId = style.Classes
+                    .Where(kv => kv.Value.ClassName == "TrayNotifyVert::Button")
+                    .Select(kv => kv.Key)
+                    .First();
+
+                int classId1 = AddClass(style, "TrayNotifyHorizComposited::TrayNotify", baseClockId);
+                int classId2 = AddClass(style, "TrayNotifyComposited::Clock", baseClockId);
+                int classId3 = AddClass(style, "TrayNotifyVertComposited::Button", baseVertButtonId);
+
+                style.MarkClassmapDirty();
+                style.Save("tmp_addclass.msstyles", true);
+
+                reloaded.Load("tmp_addclass.msstyles");
+
+                AssertClass(reloaded, classId1, "TrayNotifyHorizComposited::TrayNotify", baseClockId);
+                AssertClass(reloaded, classId2, "TrayNotifyComposited::Clock", baseClockId);
+                AssertClass(reloaded, classId3, "TrayNotifyVertComposited::Button", baseVertButtonId);
+            }
+        }
+
+        int AddClass(VisualStyle style, string className, int baseClassId)
+        {
+            int newClassId = 0;
+            if (style.Classes.Count > 0)
+            {
+                newClassId = style.Classes.Keys.Max() + 1;
+            }
+
+            var newClass = new StyleClass
+            {
+                ClassId = newClassId,
+                ClassName = className,
+                BaseClassId = baseClassId
+            };
+
+            var commonPart = new StylePart
+            {
+                PartId = 0,
+                PartName = "Common Properties"
+            };
+
+            var commonState = new StyleState
+            {
+                StateId = 0,
+                StateName = "Common"
+            };
+
+            var seedProp = new StyleProperty(IDENTIFIER.BGTYPE, IDENTIFIER.ENUM);
+            seedProp.Header.classID = newClassId;
+            seedProp.Header.partID = 0;
+            seedProp.Header.stateID = 0;
+            seedProp.SetValue(2);
+            commonState.Properties.Add(seedProp);
+
+            commonPart.States[0] = commonState;
+            newClass.Parts[0] = commonPart;
+
+            style.Classes[newClassId] = newClass;
+            return newClassId;
+        }
+
+        void AssertClass(VisualStyle style, int classId, string expectedName, int expectedBaseClassId)
+        {
+            Assert.IsTrue(style.Classes.ContainsKey(classId), $"Missing class ID {classId}");
+
+            var cls = style.Classes[classId];
+            Assert.AreEqual(expectedName, cls.ClassName, $"Unexpected class name for ID {classId}");
+            Assert.AreEqual(expectedBaseClassId, cls.BaseClassId, $"Unexpected base class for ID {classId}");
         }
 
         void LogMessage(ConsoleColor c, string message, params object[] args)
