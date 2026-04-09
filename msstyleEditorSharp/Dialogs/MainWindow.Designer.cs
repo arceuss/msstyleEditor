@@ -52,8 +52,6 @@ namespace msstyleEditor
             this.ribbonPanelProps = new System.Windows.Forms.RibbonPanel();
             this.btPropertyAdd = new System.Windows.Forms.RibbonButton();
             this.btPropertyRemove = new System.Windows.Forms.RibbonButton();
-            this.btPropertyImport = new System.Windows.Forms.RibbonButton();
-            this.btPropertyExport = new System.Windows.Forms.RibbonButton();
             this.ribbonPanelStructure = new System.Windows.Forms.RibbonPanel();
             this.ribbonPanelRemove = new System.Windows.Forms.RibbonPanel();
             this.btAddClass = new System.Windows.Forms.RibbonButton();
@@ -303,8 +301,6 @@ namespace msstyleEditor
             this.ribbonPanelProps.ButtonMoreVisible = false;
             this.ribbonPanelProps.Items.Add(this.btPropertyAdd);
             this.ribbonPanelProps.Items.Add(this.btPropertyRemove);
-            this.ribbonPanelProps.Items.Add(this.btPropertyImport);
-            this.ribbonPanelProps.Items.Add(this.btPropertyExport);
             this.ribbonPanelProps.Name = "ribbonPanelProps";
             this.ribbonPanelProps.Text = "Properties";
             // 
@@ -325,26 +321,6 @@ namespace msstyleEditor
             this.btPropertyRemove.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.SmallImage")));
             this.btPropertyRemove.Text = "Remove";
             this.btPropertyRemove.Click += new System.EventHandler(this.OnPropertyRemove);
-            // 
-            // btPropertyImport
-            // 
-            this.btPropertyImport.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyImport.Image")));
-            this.btPropertyImport.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyImport.LargeImage")));
-            this.btPropertyImport.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
-            this.btPropertyImport.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
-            this.btPropertyImport.Name = "btPropertyImport";
-            this.btPropertyImport.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyImport.SmallImage")));
-            this.btPropertyImport.Text = "Import";
-            // 
-            // btPropertyExport
-            // 
-            this.btPropertyExport.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyExport.Image")));
-            this.btPropertyExport.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyExport.LargeImage")));
-            this.btPropertyExport.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
-            this.btPropertyExport.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
-            this.btPropertyExport.Name = "btPropertyExport";
-            this.btPropertyExport.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyExport.SmallImage")));
-            this.btPropertyExport.Text = "Export";
             // 
             // ribbonPanelStructure
             // 
@@ -740,8 +716,6 @@ namespace msstyleEditor
         private System.Windows.Forms.RibbonButton btImageExport;
         private System.Windows.Forms.RibbonButton btImageImport;
         private System.Windows.Forms.RibbonPanel ribbonPanelProps;
-        private System.Windows.Forms.RibbonButton btPropertyExport;
-        private System.Windows.Forms.RibbonButton btPropertyImport;
         private System.Windows.Forms.RibbonButton btPropertyAdd;
         private System.Windows.Forms.RibbonButton btPropertyRemove;
         private System.Windows.Forms.RibbonButton btOpenPreview;

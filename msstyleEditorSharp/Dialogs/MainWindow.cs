@@ -269,8 +269,6 @@ namespace msstyleEditor
             btFileInfoExport.Enabled = true;
             btImageExport.Enabled = false;
             btImageImport.Enabled = false;
-            //btPropertyExport.Enabled = false;
-            //btPropertyImport.Enabled = false;
             btPropertyAdd.Enabled = !isXp;
             btPropertyRemove.Enabled = !isXp;
             btAddClass.Enabled = !isXp;
@@ -311,8 +309,6 @@ namespace msstyleEditor
             btFileInfoExport.Enabled = false;
             btImageExport.Enabled = false;
             btImageImport.Enabled = false;
-            btPropertyExport.Enabled = false;
-            btPropertyImport.Enabled = false;
             btPropertyAdd.Enabled = false;
             btPropertyRemove.Enabled = false;
             btAddClass.Enabled = false;
