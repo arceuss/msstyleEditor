@@ -175,6 +175,7 @@
     </Compile>
     <Compile Include="PropView\AnimationWrapper.cs" />
     <Compile Include="PropView\ColorEditor.cs" />
+    <Compile Include="PropView\FontResourceEditor.cs" />
     <Compile Include="PropView\EnumFlagCheckedListBox.cs">
       <SubType>Component</SubType>
     </Compile>

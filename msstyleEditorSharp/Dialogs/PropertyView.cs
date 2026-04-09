@@ -25,6 +25,7 @@ namespace msstyleEditor.Dialogs
         public PropertyViewWindow()
         {
             InitializeComponent();
+            propertyView.PropertyValueChanged += (s, e) => propertyView.Refresh();
         }
 
         public void SetAnimation(AnimationTypeDescriptor anim)
