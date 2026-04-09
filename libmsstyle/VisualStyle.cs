@@ -78,6 +78,7 @@ namespace libmsstyle
         private int m_bcmapClassIdOffset = 0;
         private int m_bcmapEntryCount = 0;
         private bool m_bcmapHasCountField = false;
+        private List<int> m_originalBcmapParents;
 
         // XP-specific: maps image file paths (from INI) to BITMAP resource names
         private Dictionary<string, string> m_xpImageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -586,10 +587,12 @@ namespace libmsstyle
             // Update BCMAP: preserve original format (with or without count field).
             if (m_originalBcmap != null && newClasses.Count > 0)
             {
-                int originalEntryCount;
-                List<int> originalParents;
-                bool hasCountField;
-                if (TryParseBaseClassMap(m_originalBcmap, m_originalClassCount, out originalEntryCount, out originalParents, out hasCountField))
+                // Use stored values from load time to ensure consistency
+                int originalEntryCount = m_bcmapEntryCount;
+                List<int> originalParents = m_originalBcmapParents;
+                bool hasCountField = m_bcmapHasCountField;
+
+                if (originalParents != null && originalParents.Count > 0)
                 {
                     int updatedEntryCount = originalEntryCount + newClasses.Count;
                     var bcms = new MemoryStream();
@@ -969,6 +972,8 @@ namespace libmsstyle
 
             m_bcmapEntryCount = entryCount;
             m_bcmapHasCountField = hasCountField;
+            // Store the original parents for use during save
+            m_originalBcmapParents = new List<int>(parents);
 
             // BCMAP indices are in the internal class index space used by uxtheme.
             // Map them into our CMAP-based class IDs using a count-derived offset.
