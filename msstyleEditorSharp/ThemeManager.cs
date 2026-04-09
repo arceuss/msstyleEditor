@@ -40,8 +40,13 @@ namespace msstyleEditor
         private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref bool pvParam, uint fWinIni);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref LOGFONT pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
 
+        private const uint SPI_GETICONTITLELOGFONT = 0x001F;
+        private const uint SPI_SETICONTITLELOGFONT = 0x0022;
         private const uint SPI_GETNONCLIENTMETRICS = 0x0029;
         private const uint SPI_SETNONCLIENTMETRICS = 0x002A;
         private const uint SPI_GETFLATMENU = 0x1022;
@@ -100,6 +105,8 @@ namespace msstyleEditor
         private int[] m_savedSysColorValues;
         private NONCLIENTMETRICS m_savedNcm;
         private bool m_savedNcmValid;
+        private LOGFONT m_savedIconTitleFont;
+        private bool m_savedIconTitleFontValid;
         private bool m_savedFlatMenu;
         private bool m_savedFlatMenuValid;
 
@@ -338,6 +345,14 @@ namespace msstyleEditor
             m_savedNcm.cbSize = Marshal.SizeOf(typeof(NONCLIENTMETRICS));
             m_savedNcmValid = SystemParametersInfo(SPI_GETNONCLIENTMETRICS, (uint)m_savedNcm.cbSize, ref m_savedNcm, 0);
 
+            // Save current icon title font separately; it is not part of NONCLIENTMETRICS.
+            m_savedIconTitleFont = new LOGFONT();
+            m_savedIconTitleFontValid = SystemParametersInfo(
+                SPI_GETICONTITLELOGFONT,
+                (uint)Marshal.SizeOf(typeof(LOGFONT)),
+                ref m_savedIconTitleFont,
+                0);
+
             // Save current flat menu setting
             m_savedFlatMenu = false;
             m_savedFlatMenuValid = SystemParametersInfo(SPI_GETFLATMENU, 0, ref m_savedFlatMenu, 0);
@@ -363,6 +378,7 @@ namespace msstyleEditor
 
             var colorMap = new Dictionary<int, int>();
             bool ncmModified = false;
+            LOGFONT? iconTitleFont = null;
             bool? flatMenuValue = null;
 
             var ncm = m_savedNcm; // start from current values, override with style values
@@ -421,7 +437,7 @@ namespace msstyleEditor
                                     case IDENTIFIER.MENUFONT: ncm.lfMenuFont = lf; ncmModified = true; break;
                                     case IDENTIFIER.STATUSFONT: ncm.lfStatusFont = lf; ncmModified = true; break;
                                     case IDENTIFIER.MSGBOXFONT: ncm.lfMessageFont = lf; ncmModified = true; break;
-                                    case IDENTIFIER.ICONTITLEFONT: break; // ICONTITLEFONT is set separately via SPI_SETICONTITLELOGFONT, skip for now
+                                    case IDENTIFIER.ICONTITLEFONT: iconTitleFont = lf; break;
                                 }
                             }
                         }
@@ -441,14 +457,24 @@ namespace msstyleEditor
             if (ncmModified)
             {
                 ncm.cbSize = Marshal.SizeOf(typeof(NONCLIENTMETRICS));
-                SystemParametersInfo(SPI_SETNONCLIENTMETRICS, (uint)ncm.cbSize, ref ncm, SPIF_SENDCHANGE);
+                SystemParametersInfo(SPI_SETNONCLIENTMETRICS, (uint)ncm.cbSize, ref ncm, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+            }
+
+            if (iconTitleFont.HasValue)
+            {
+                var iconFont = iconTitleFont.Value;
+                SystemParametersInfo(
+                    SPI_SETICONTITLELOGFONT,
+                    (uint)Marshal.SizeOf(typeof(LOGFONT)),
+                    ref iconFont,
+                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
             }
 
             // Apply flat menu setting.
             // SPI_SETFLATMENU uses uiParam for the value, not pvParam.
             if (flatMenuValue.HasValue)
             {
-                SystemParametersInfo(SPI_SETFLATMENU, flatMenuValue.Value ? 1u : 0u, IntPtr.Zero, SPIF_SENDCHANGE);
+                SystemParametersInfo(SPI_SETFLATMENU, flatMenuValue.Value ? 1u : 0u, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
             }
 
             // Apply system colors LAST so that WM_SETTINGCHANGE from
@@ -482,14 +508,25 @@ namespace msstyleEditor
             if (m_savedNcmValid)
             {
                 m_savedNcm.cbSize = Marshal.SizeOf(typeof(NONCLIENTMETRICS));
-                SystemParametersInfo(SPI_SETNONCLIENTMETRICS, (uint)m_savedNcm.cbSize, ref m_savedNcm, SPIF_SENDCHANGE);
+                SystemParametersInfo(SPI_SETNONCLIENTMETRICS, (uint)m_savedNcm.cbSize, ref m_savedNcm, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
                 m_savedNcmValid = false;
+            }
+
+            // Restore icon title font separately.
+            if (m_savedIconTitleFontValid)
+            {
+                SystemParametersInfo(
+                    SPI_SETICONTITLELOGFONT,
+                    (uint)Marshal.SizeOf(typeof(LOGFONT)),
+                    ref m_savedIconTitleFont,
+                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+                m_savedIconTitleFontValid = false;
             }
 
             // Restore flat menu setting
             if (m_savedFlatMenuValid)
             {
-                SystemParametersInfo(SPI_SETFLATMENU, 0, ref m_savedFlatMenu, SPIF_SENDCHANGE);
+                SystemParametersInfo(SPI_SETFLATMENU, 0, ref m_savedFlatMenu, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
                 m_savedFlatMenuValid = false;
             }
         }
