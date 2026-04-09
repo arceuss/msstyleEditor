@@ -51,5 +51,18 @@ namespace msstyleEditor
                 RegSetValueSafe(m_EditorKeyPath, "HasConfirmedWarning", "true");
             }
         }
+
+        public string ImageEditorPath
+        {
+            get
+            {
+                var obj = RegGetValueSafe(m_EditorKeyPath, "ImageEditorPath", "");
+                return obj as string ?? "";
+            }
+            set
+            {
+                RegSetValueSafe(m_EditorKeyPath, "ImageEditorPath", value ?? "");
+            }
+        }
     }
 }

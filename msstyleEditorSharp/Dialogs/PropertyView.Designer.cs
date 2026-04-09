@@ -34,6 +34,7 @@ namespace msstyleEditor.Dialogs
             this.propViewContextMenu = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.newPropertyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.deleteToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.recolorToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.propViewContextMenu.SuspendLayout();
             this.SuspendLayout();
             // 
@@ -55,9 +56,10 @@ namespace msstyleEditor.Dialogs
             // 
             this.propViewContextMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.newPropertyToolStripMenuItem,
-            this.deleteToolStripMenuItem});
+            this.deleteToolStripMenuItem,
+            this.recolorToolStripMenuItem});
             this.propViewContextMenu.Name = "contextMenuStrip1";
-            this.propViewContextMenu.Size = new System.Drawing.Size(145, 48);
+            this.propViewContextMenu.Size = new System.Drawing.Size(145, 70);
             // 
             // newPropertyToolStripMenuItem
             // 
@@ -72,6 +74,13 @@ namespace msstyleEditor.Dialogs
             this.deleteToolStripMenuItem.Size = new System.Drawing.Size(144, 22);
             this.deleteToolStripMenuItem.Text = "Delete";
             this.deleteToolStripMenuItem.Click += new System.EventHandler(this.OnPropertyRemove);
+            // 
+            // recolorToolStripMenuItem
+            // 
+            this.recolorToolStripMenuItem.Name = "recolorToolStripMenuItem";
+            this.recolorToolStripMenuItem.Size = new System.Drawing.Size(144, 22);
+            this.recolorToolStripMenuItem.Text = "Recolor";
+            this.recolorToolStripMenuItem.Click += new System.EventHandler(this.OnRecolorColors);
             // 
             // PropertyViewWindow
             // 
@@ -93,5 +102,6 @@ namespace msstyleEditor.Dialogs
         private System.Windows.Forms.ContextMenuStrip propViewContextMenu;
         private System.Windows.Forms.ToolStripMenuItem newPropertyToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem deleteToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem recolorToolStripMenuItem;
     }
 }

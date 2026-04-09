@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Text;
 
 namespace msstyleEditor.PropView
@@ -98,8 +99,11 @@ namespace msstyleEditor.PropView
         public PropertyDescriptorCollection GetProperties(Attribute[] attributes)
         {
             List<PropertyDescriptor> propDesc = new List<PropertyDescriptor>();
-            foreach (var state in m_part.States)
+            foreach (var state in m_part.States.OrderBy(s => s.Key))
             {
+                // Keep properties stable and sorted by property ID.
+                state.Value.Properties.Sort((a, b) => a.Header.nameID.CompareTo(b.Header.nameID));
+
                 // dummy prop for empty states
                 if (state.Value.Properties.Count == 0)
                 {

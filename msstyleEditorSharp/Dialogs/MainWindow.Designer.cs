@@ -41,15 +41,27 @@ namespace msstyleEditor
             this.btThemeFolder = new System.Windows.Forms.RibbonButton();
             this.ribbonPanelTheme = new System.Windows.Forms.RibbonPanel();
             this.btTestTheme = new System.Windows.Forms.RibbonButton();
+            this.btReloadTest = new System.Windows.Forms.RibbonButton();
             this.btOpenPreview = new System.Windows.Forms.RibbonButton();
             this.ribbonPanelImages = new System.Windows.Forms.RibbonPanel();
             this.btImageImport = new System.Windows.Forms.RibbonButton();
             this.btImageExport = new System.Windows.Forms.RibbonButton();
+            this.btImageEdit = new System.Windows.Forms.RibbonButton();
+            this.btSetImageEditor = new System.Windows.Forms.RibbonButton();
+            this.btImageRecolor = new System.Windows.Forms.RibbonButton();
             this.ribbonPanelProps = new System.Windows.Forms.RibbonPanel();
             this.btPropertyAdd = new System.Windows.Forms.RibbonButton();
             this.btPropertyRemove = new System.Windows.Forms.RibbonButton();
             this.btPropertyImport = new System.Windows.Forms.RibbonButton();
             this.btPropertyExport = new System.Windows.Forms.RibbonButton();
+            this.ribbonPanelStructure = new System.Windows.Forms.RibbonPanel();
+            this.ribbonPanelRemove = new System.Windows.Forms.RibbonPanel();
+            this.btAddClass = new System.Windows.Forms.RibbonButton();
+            this.btAddPart = new System.Windows.Forms.RibbonButton();
+            this.btAddState = new System.Windows.Forms.RibbonButton();
+            this.btRemoveClass = new System.Windows.Forms.RibbonButton();
+            this.btRemovePart = new System.Windows.Forms.RibbonButton();
+            this.btRemoveState = new System.Windows.Forms.RibbonButton();
             this.ribbonPanelSearch = new System.Windows.Forms.RibbonPanel();
             this.btSearch = new System.Windows.Forms.RibbonButton();
             this.tabView = new System.Windows.Forms.RibbonTab();
@@ -124,6 +136,8 @@ namespace msstyleEditor
             this.tabTheme.Panels.Add(this.ribbonPanelTheme);
             this.tabTheme.Panels.Add(this.ribbonPanelImages);
             this.tabTheme.Panels.Add(this.ribbonPanelProps);
+            this.tabTheme.Panels.Add(this.ribbonPanelStructure);
+            this.tabTheme.Panels.Add(this.ribbonPanelRemove);
             this.tabTheme.Panels.Add(this.ribbonPanelSearch);
             this.tabTheme.Text = "Theme";
             // 
@@ -197,6 +211,7 @@ namespace msstyleEditor
             // 
             this.ribbonPanelTheme.ButtonMoreVisible = false;
             this.ribbonPanelTheme.Items.Add(this.btTestTheme);
+            this.ribbonPanelTheme.Items.Add(this.btReloadTest);
             this.ribbonPanelTheme.Items.Add(this.btOpenPreview);
             this.ribbonPanelTheme.Name = "ribbonPanelTheme";
             this.ribbonPanelTheme.Text = "Theme";
@@ -209,6 +224,16 @@ namespace msstyleEditor
             this.btTestTheme.SmallImage = ((System.Drawing.Image)(resources.GetObject("btTestTheme.SmallImage")));
             this.btTestTheme.Text = "Test";
             this.btTestTheme.Click += new System.EventHandler(this.OnTestTheme);
+            // 
+            // btReloadTest
+            // 
+            this.btReloadTest.Image = global::msstyleEditor.Properties.Resources.Placeholder32;
+            this.btReloadTest.LargeImage = global::msstyleEditor.Properties.Resources.Placeholder32;
+            this.btReloadTest.SmallImage = global::msstyleEditor.Properties.Resources.Placeholder16;
+            this.btReloadTest.Name = "btReloadTest";
+            this.btReloadTest.Text = "Reload";
+            this.btReloadTest.Enabled = false;
+            this.btReloadTest.Click += new System.EventHandler(this.OnReloadTest);
             // 
             // btOpenPreview
             // 
@@ -224,6 +249,9 @@ namespace msstyleEditor
             this.ribbonPanelImages.ButtonMoreVisible = false;
             this.ribbonPanelImages.Items.Add(this.btImageImport);
             this.ribbonPanelImages.Items.Add(this.btImageExport);
+            this.ribbonPanelImages.Items.Add(this.btImageEdit);
+            this.ribbonPanelImages.Items.Add(this.btSetImageEditor);
+            this.ribbonPanelImages.Items.Add(this.btImageRecolor);
             this.ribbonPanelImages.Name = "ribbonPanelImages";
             this.ribbonPanelImages.Text = "Images";
             // 
@@ -244,6 +272,30 @@ namespace msstyleEditor
             this.btImageExport.SmallImage = ((System.Drawing.Image)(resources.GetObject("btImageExport.SmallImage")));
             this.btImageExport.Text = "Export";
             this.btImageExport.Click += new System.EventHandler(this.OnImageExport);
+            // 
+            // btImageEdit
+            // 
+            this.btImageEdit.Image = Properties.Resources.Edit32;
+            this.btImageEdit.LargeImage = Properties.Resources.Edit32;
+            this.btImageEdit.Name = "btImageEdit";
+            this.btImageEdit.SmallImage = Properties.Resources.Edit16;
+            this.btImageEdit.Text = "Edit";
+            this.btImageEdit.Click += new System.EventHandler(this.OnImageEdit);
+            // 
+            // btSetImageEditor
+            // 
+            this.btSetImageEditor.Name = "btSetImageEditor";
+            this.btSetImageEditor.Text = "Set Editor";
+            this.btSetImageEditor.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Compact;
+            this.btSetImageEditor.Click += new System.EventHandler(this.OnSetImageEditor);
+            // 
+            // btImageRecolor
+            // 
+            this.btImageRecolor.SmallImage = global::msstyleEditor.Properties.Resources.Placeholder16;
+            this.btImageRecolor.Name = "btImageRecolor";
+            this.btImageRecolor.Text = "Recolor";
+            this.btImageRecolor.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btImageRecolor.Click += new System.EventHandler(this.OnImageRecolor);
             // 
             // ribbonPanelProps
             // 
@@ -292,6 +344,90 @@ namespace msstyleEditor
             this.btPropertyExport.Name = "btPropertyExport";
             this.btPropertyExport.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyExport.SmallImage")));
             this.btPropertyExport.Text = "Export";
+            // 
+            // ribbonPanelStructure
+            // 
+            this.ribbonPanelStructure.ButtonMoreVisible = false;
+            this.ribbonPanelStructure.Items.Add(this.btAddClass);
+            this.ribbonPanelStructure.Items.Add(this.btAddPart);
+            this.ribbonPanelStructure.Items.Add(this.btAddState);
+            this.ribbonPanelStructure.Name = "ribbonPanelStructure";
+            this.ribbonPanelStructure.Text = "Add";
+            // 
+            // btAddClass
+            // 
+            this.btAddClass.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.Image")));
+            this.btAddClass.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.LargeImage")));
+            this.btAddClass.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddClass.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddClass.Name = "btAddClass";
+            this.btAddClass.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.SmallImage")));
+            this.btAddClass.Text = "Class";
+            this.btAddClass.Click += new System.EventHandler(this.OnAddClass);
+            // 
+            // btAddPart
+            // 
+            this.btAddPart.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.Image")));
+            this.btAddPart.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.LargeImage")));
+            this.btAddPart.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddPart.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddPart.Name = "btAddPart";
+            this.btAddPart.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.SmallImage")));
+            this.btAddPart.Text = "Part";
+            this.btAddPart.Click += new System.EventHandler(this.OnAddPart);
+            // 
+            // btAddState
+            // 
+            this.btAddState.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.Image")));
+            this.btAddState.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.LargeImage")));
+            this.btAddState.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddState.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btAddState.Name = "btAddState";
+            this.btAddState.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyAdd.SmallImage")));
+            this.btAddState.Text = "State";
+            this.btAddState.Click += new System.EventHandler(this.OnAddState);
+            // 
+            // ribbonPanelRemove
+            // 
+            this.ribbonPanelRemove.ButtonMoreVisible = false;
+            this.ribbonPanelRemove.Items.Add(this.btRemoveClass);
+            this.ribbonPanelRemove.Items.Add(this.btRemovePart);
+            this.ribbonPanelRemove.Items.Add(this.btRemoveState);
+            this.ribbonPanelRemove.Name = "ribbonPanelRemove";
+            this.ribbonPanelRemove.Text = "Remove";
+            // 
+            // btRemoveClass
+            // 
+            this.btRemoveClass.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.Image")));
+            this.btRemoveClass.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.LargeImage")));
+            this.btRemoveClass.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemoveClass.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemoveClass.Name = "btRemoveClass";
+            this.btRemoveClass.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.SmallImage")));
+            this.btRemoveClass.Text = "Class";
+            this.btRemoveClass.Click += new System.EventHandler(this.OnRemoveClass);
+            // 
+            // btRemovePart
+            // 
+            this.btRemovePart.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.Image")));
+            this.btRemovePart.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.LargeImage")));
+            this.btRemovePart.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemovePart.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemovePart.Name = "btRemovePart";
+            this.btRemovePart.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.SmallImage")));
+            this.btRemovePart.Text = "Part";
+            this.btRemovePart.Click += new System.EventHandler(this.OnRemovePart);
+            // 
+            // btRemoveState
+            // 
+            this.btRemoveState.Image = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.Image")));
+            this.btRemoveState.LargeImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.LargeImage")));
+            this.btRemoveState.MaxSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemoveState.MinSizeMode = System.Windows.Forms.RibbonElementSizeMode.Medium;
+            this.btRemoveState.Name = "btRemoveState";
+            this.btRemoveState.SmallImage = ((System.Drawing.Image)(resources.GetObject("btPropertyRemove.SmallImage")));
+            this.btRemoveState.Text = "State";
+            this.btRemoveState.Click += new System.EventHandler(this.OnRemoveState);
             // 
             // ribbonPanelSearch
             // 
@@ -626,5 +762,17 @@ namespace msstyleEditor
         private System.Windows.Forms.RibbonPanel ribbonPanelWindows;
         private System.Windows.Forms.RibbonButton btShowImageView;
         private System.Windows.Forms.RibbonButton btShowRenderView;
+        private System.Windows.Forms.RibbonButton btImageEdit;
+        private System.Windows.Forms.RibbonButton btSetImageEditor;
+        private System.Windows.Forms.RibbonButton btImageRecolor;
+        private System.Windows.Forms.RibbonButton btReloadTest;
+        private System.Windows.Forms.RibbonPanel ribbonPanelStructure;
+        private System.Windows.Forms.RibbonPanel ribbonPanelRemove;
+        private System.Windows.Forms.RibbonButton btAddClass;
+        private System.Windows.Forms.RibbonButton btAddPart;
+        private System.Windows.Forms.RibbonButton btAddState;
+        private System.Windows.Forms.RibbonButton btRemoveClass;
+        private System.Windows.Forms.RibbonButton btRemovePart;
+        private System.Windows.Forms.RibbonButton btRemoveState;
     }
 }

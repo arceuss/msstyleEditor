@@ -8,6 +8,7 @@ namespace libmsstyle
 {
     public enum Platform
     {
+        WinXP,
         Vista,
         Win7,
         Win8,
@@ -22,6 +23,8 @@ namespace libmsstyle
         {
             switch (p)
             {
+                case Platform.WinXP:
+                    return "Windows XP";
                 case Platform.Vista:
                     return "Windows Vista";
                 case Platform.Win7:

@@ -2,6 +2,7 @@
 using msstyleEditor.PropView;
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Windows.Forms;
 
 namespace msstyleEditor.Dialogs
@@ -126,16 +127,113 @@ namespace msstyleEditor.Dialogs
             propertyView.Refresh();
         }
 
+        private void OnRecolorColors(object sender, EventArgs e)
+        {
+            if (m_part == null)
+            {
+                MessageBox.Show("Select a part first!", "Recolor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using (var colorDialog = new ColorDialog())
+            {
+                colorDialog.FullOpen = true;
+                if (colorDialog.ShowDialog() != DialogResult.OK)
+                {
+                    return;
+                }
+
+                var target = colorDialog.Color;
+                double targetHue = RgbToHsvHue(target.R / 255.0, target.G / 255.0, target.B / 255.0);
+
+                int count = 0;
+                foreach (var state in m_part.States)
+                {
+                    foreach (var prop in state.Value.Properties)
+                    {
+                        if (prop.Header.typeID == (int)IDENTIFIER.COLOR)
+                        {
+                            var c = (Color)prop.GetValue();
+                            var recolored = RecolorColor(c, targetHue);
+                            prop.SetValue(recolored);
+                            count++;
+                        }
+                    }
+                }
+
+                propertyView.Refresh();
+                MessageBox.Show($"Recolored {count} color properties.", "Recolor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private static double RgbToHsvHue(double r, double g, double b)
+        {
+            double min = Math.Min(r, Math.Min(g, b));
+            double max = Math.Max(r, Math.Max(g, b));
+            double delta = max - min;
+            if (delta < 0.00001) return 0;
+            double h;
+            if (r >= max)
+                h = (g - b) / delta;
+            else if (g >= max)
+                h = 2.0 + (b - r) / delta;
+            else
+                h = 4.0 + (r - g) / delta;
+            h *= 60.0;
+            if (h < 0.0) h += 360.0;
+            return h;
+        }
+
+        private static Color RecolorColor(Color c, double targetHue)
+        {
+            double r = c.R / 255.0, g = c.G / 255.0, b = c.B / 255.0;
+            double min = Math.Min(r, Math.Min(g, b));
+            double max = Math.Max(r, Math.Max(g, b));
+            double delta = max - min;
+            double s = max > 0.0 ? delta / max : 0;
+            double v = max;
+
+            // Convert target hue + original s,v back to RGB
+            if (s <= 0.0)
+                return c; // achromatic, keep as-is
+
+            double hh = targetHue >= 360.0 ? 0.0 : targetHue;
+            hh /= 60.0;
+            int i = (int)hh;
+            double ff = hh - i;
+            double p = v * (1.0 - s);
+            double q = v * (1.0 - (s * ff));
+            double t = v * (1.0 - (s * (1.0 - ff)));
+
+            double nr, ng, nb;
+            switch (i)
+            {
+                case 0: nr = v; ng = t; nb = p; break;
+                case 1: nr = q; ng = v; nb = p; break;
+                case 2: nr = p; ng = v; nb = t; break;
+                case 3: nr = p; ng = q; nb = v; break;
+                case 4: nr = t; ng = p; nb = v; break;
+                default: nr = v; ng = p; nb = q; break;
+            }
+
+            return Color.FromArgb(c.A,
+                Math.Min(255, Math.Max(0, (int)(nr * 255))),
+                Math.Min(255, Math.Max(0, (int)(ng * 255))),
+                Math.Min(255, Math.Max(0, (int)(nb * 255))));
+        }
+
         private void OnPropertySelected(object sender, SelectedGridItemChangedEventArgs e)
         {
             if (m_viewMode != PropertyViewMode.ClassMode)
                 return;
             const int CTX_ADD = 0;
             const int CTX_REM = 1;
+            const int CTX_RECOLOR = 2;
 
             bool haveSelection = e.NewSelection != null;
             propViewContextMenu.Items[CTX_ADD].Enabled = haveSelection;
             propViewContextMenu.Items[CTX_REM].Enabled = haveSelection;
+            propViewContextMenu.Items[CTX_RECOLOR].Enabled = m_part != null;
             if (!haveSelection)
                 return;
 
