@@ -14,17 +14,20 @@ namespace msstyleEditor
     {
         private VisualStyle m_style;
         private StylePart m_part;
+        private StyleState m_selectedState;
+        private StyleState m_commonState;
 
-        public PartRenderer(VisualStyle style, StylePart part)
+        public PartRenderer(VisualStyle style, StylePart part, StyleState selectedState = null)
         {
             m_style = style;
             m_part = part;
+            m_selectedState = selectedState;
+            m_part.States.TryGetValue(0, out m_commonState);
         }
 
         public Bitmap RenderPreview()
         {
-            StyleState state;
-            if(!m_part.States.TryGetValue(0, out state))
+            if (GetPrimaryState() == null)
             {
                 return null;
             }
@@ -38,10 +41,163 @@ namespace msstyleEditor
             return surface;
         }
 
+        private StyleState GetPrimaryState()
+        {
+            if (m_selectedState != null)
+            {
+                return m_selectedState;
+            }
+
+            return m_commonState;
+        }
+
+        private IEnumerable<StyleState> GetPropertySearchStates()
+        {
+            if (m_selectedState != null)
+            {
+                yield return m_selectedState;
+            }
+
+            if (m_commonState != null && !ReferenceEquals(m_commonState, m_selectedState))
+            {
+                yield return m_commonState;
+            }
+        }
+
+        private bool TryGetPropertyValue<T>(IDENTIFIER ident, ref T value)
+        {
+            foreach (var state in GetPropertySearchStates())
+            {
+                if (state.TryGetPropertyValue(ident, ref value))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private StyleProperty FindProperty(params IDENTIFIER[] propertyIds)
+        {
+            foreach (var state in GetPropertySearchStates())
+            {
+                foreach (var propertyId in propertyIds)
+                {
+                    var prop = state.Properties.Find((p) => p.Header.nameID == (int)propertyId);
+                    if (prop != null)
+                    {
+                        return prop;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private bool TryGetAtlasRect(StyleState state, out Rectangle atlasRect)
+        {
+            atlasRect = Rectangle.Empty;
+            if (state == null)
+            {
+                return false;
+            }
+
+            var rectProp = state.Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.ATLASRECT);
+            if (rectProp == null)
+            {
+                return false;
+            }
+
+            var mt = rectProp.GetValueAs<Margins>();
+            atlasRect = Rectangle.FromLTRB(mt.Left, mt.Top, mt.Right, mt.Bottom);
+            return atlasRect.Width > 0 && atlasRect.Height > 0;
+        }
+
+        private Rectangle SliceImageRegion(Rectangle imageRegion, int imageLayout, int imageCount, int imageIndex)
+        {
+            int left = imageRegion.Left;
+            int top = imageRegion.Top;
+            int right = imageRegion.Right;
+            int bottom = imageRegion.Bottom;
+
+            if (imageLayout == 1)
+            {
+                left += imageRegion.Width * imageIndex / imageCount;
+                right = imageRegion.Left + imageRegion.Width * (imageIndex + 1) / imageCount;
+            }
+            else
+            {
+                top += imageRegion.Height * imageIndex / imageCount;
+                bottom = imageRegion.Top + imageRegion.Height * (imageIndex + 1) / imageCount;
+            }
+
+            return Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
+        private bool TryGetPreviewImageIndex(int imageCount, out int imageIndex)
+        {
+            imageIndex = 0;
+            if (imageCount <= 1)
+            {
+                return false;
+            }
+
+            if (m_selectedState != null && m_selectedState.StateId > 0)
+            {
+                imageIndex = Math.Min(m_selectedState.StateId - 1, imageCount - 1);
+                return true;
+            }
+
+            imageIndex = 0;
+            return true;
+        }
+
+        private Rectangle ResolveImageRegion(Image fullImage)
+        {
+            Rectangle imageRegion;
+            if (TryGetAtlasRect(m_selectedState, out imageRegion))
+            {
+                imageRegion.Intersect(new Rectangle(0, 0, fullImage.Width, fullImage.Height));
+                return imageRegion;
+            }
+
+            if (TryGetAtlasRect(m_commonState, out imageRegion))
+            {
+                int imageCount = 1;
+                TryGetPropertyValue(IDENTIFIER.IMAGECOUNT, ref imageCount);
+
+                int imageIndex;
+                if (TryGetPreviewImageIndex(imageCount, out imageIndex))
+                {
+                    int imageLayout = 0;
+                    TryGetPropertyValue(IDENTIFIER.IMAGELAYOUT, ref imageLayout);
+                    imageRegion = SliceImageRegion(imageRegion, imageLayout, imageCount, imageIndex);
+                }
+
+                imageRegion.Intersect(new Rectangle(0, 0, fullImage.Width, fullImage.Height));
+                return imageRegion;
+            }
+
+            imageRegion = new Rectangle(0, 0, fullImage.Width, fullImage.Height);
+
+            int fallbackImageCount = 1;
+            TryGetPropertyValue(IDENTIFIER.IMAGECOUNT, ref fallbackImageCount);
+            int fallbackImageIndex;
+            if (TryGetPreviewImageIndex(fallbackImageCount, out fallbackImageIndex))
+            {
+                int fallbackImageLayout = 0;
+                TryGetPropertyValue(IDENTIFIER.IMAGELAYOUT, ref fallbackImageLayout);
+                imageRegion = SliceImageRegion(imageRegion, fallbackImageLayout, fallbackImageCount, fallbackImageIndex);
+            }
+
+            imageRegion.Intersect(new Rectangle(0, 0, fullImage.Width, fullImage.Height));
+            return imageRegion;
+        }
+
         private void DrawBackground(Graphics g)
         {
             int bgType = 2;
-            m_part.States[0].TryGetPropertyValue(IDENTIFIER.BGTYPE, ref bgType);
+            TryGetPropertyValue(IDENTIFIER.BGTYPE, ref bgType);
 
             switch(bgType)
             {
@@ -55,128 +211,94 @@ namespace msstyleEditor
 
         private void DrawBackgroundImageFill(Graphics g)
         {
-            var imageFileProp = m_part.States[0].Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.IMAGEFILE);
-            if (imageFileProp == default(StyleProperty))
+            var imageFileProp = FindProperty(IDENTIFIER.IMAGEFILE, IDENTIFIER.IMAGEFILE1);
+            if (imageFileProp == null)
             {
-                imageFileProp = m_part.States[0].Properties.Find((p) => p.Header.nameID == (int)IDENTIFIER.IMAGEFILE1);
-                if (imageFileProp == default(StyleProperty))
+                return;
+            }
+
+            var resource = m_style.GetResourceFromProperty(imageFileProp);
+            if (resource?.Data == null)
+            {
+                return;
+            }
+
+            StyleResourceType resourceType = resource.Type;
+            string file = m_style.GetQueuedResourceUpdate(imageFileProp.Header.shortFlag, resourceType);
+
+            using (Image fullImage = !String.IsNullOrEmpty(file)
+                ? Image.FromFile(file)
+                : Image.FromStream(new MemoryStream(resource.Data)))
+            {
+                Rectangle imagePartToDraw = ResolveImageRegion(fullImage);
+                if (imagePartToDraw.Width <= 0 || imagePartToDraw.Height <= 0)
                 {
                     return;
                 }
-            }
 
-            Image fullImage = null;
+                int sizingType = 0; // TRUESIZE
+                TryGetPropertyValue(IDENTIFIER.SIZINGTYPE, ref sizingType);
 
-            string file = m_style.GetQueuedResourceUpdate(imageFileProp.Header.shortFlag, StyleResourceType.Image);
-            if (!String.IsNullOrEmpty(file))
-            {
-                fullImage = Image.FromFile(file);
-            }
-            else
-            {
-                var resource = m_style.GetResourceFromProperty(imageFileProp);
-                if (resource?.Data != null)
+                Margins sizingMargins = default(Margins);
+                bool haveSizingMargins = TryGetPropertyValue(IDENTIFIER.SIZINGMARGINS, ref sizingMargins);
+                bool sizingMarginsZero = new Margins(0, 0, 0, 0).Equals(sizingMargins);
+
+                switch (sizingType)
                 {
-                    fullImage = Image.FromStream(new MemoryStream(resource.Data));
-                }
-                else
-                {
-                    return;
-                }
-            }
-
-            Rectangle imagePartToDraw = new Rectangle(0, 0, fullImage.Width, fullImage.Height);
-
-            int imageLayout = 0; // VERTICAL
-            bool haveImageLayout = m_part.States[0].TryGetPropertyValue(IDENTIFIER.IMAGELAYOUT, ref imageLayout);
-
-            int imageCount = 1;
-            bool haveImageCount = m_part.States[0].TryGetPropertyValue(IDENTIFIER.IMAGECOUNT, ref imageCount);
-
-            // If the image contains mutliple images, we select the nth one.
-            if (imageCount > 1)
-            {
-                int partW = imageLayout == 1
-                    ? fullImage.Width / imageCount
-                    : fullImage.Width;
-                int partH = imageLayout == 0
-                    ? fullImage.Height / imageCount
-                    : fullImage.Height;
-                int n = 0;
-
-                imagePartToDraw = new Rectangle(
-                    0 + (partW * n),
-                    0 + (partH * n),
-                    partW, partH
-                );
-            }
-
-            int sizingType = 0; // TRUESIZE
-            bool haveSizingTypes = m_part.States[0].TryGetPropertyValue(IDENTIFIER.SIZINGTYPE, ref sizingType);
-
-            Margins sizingMargins = default(Margins);
-            bool haveSizingMargins = m_part.States[0].TryGetPropertyValue(IDENTIFIER.SIZINGMARGINS, ref sizingMargins);
-            bool sizingMarginsZero = new Margins(0, 0, 0, 0).Equals(sizingMargins);
-
-            switch (sizingType)
-            {
-                case 0: // TRUESIZE
-                    {
-                        // center image for better looks
-                        Rectangle dst = new Rectangle(
-                            (int)(g.VisibleClipBounds.Width / 2) - (imagePartToDraw.Width / 2),
-                            (int)(g.VisibleClipBounds.Height / 2) - (imagePartToDraw.Height / 2),
-                            imagePartToDraw.Width, imagePartToDraw.Height);
-
-                        g.DrawImage(fullImage, dst, imagePartToDraw, GraphicsUnit.Pixel);
-                    }
-                    break;
-                case 1: // STRETCH
-                case 2: // TILE
-                    {
-                        if (haveSizingMargins && !sizingMarginsZero)
+                    case 0: // TRUESIZE
                         {
-                            // Perform 9-slice-scaling. 
-                            // Margin tells us the distance from each side that we have to preserve.
-                            // For drawing, we convert this side-relative input into absolute coords
-                            // for this specific image.
-                            Rectangle absMargins = new Rectangle(
-                                sizingMargins.Left,
-                                sizingMargins.Top,
-                                Math.Max(imagePartToDraw.Width - sizingMargins.Left - sizingMargins.Right, 1), // some margins are invalid.
-                                Math.Max(imagePartToDraw.Height - sizingMargins.Top - sizingMargins.Bottom, 1) // some margins are invalid.
-                            );
+                            Rectangle dst = new Rectangle(
+                                (int)(g.VisibleClipBounds.Width / 2) - (imagePartToDraw.Width / 2),
+                                (int)(g.VisibleClipBounds.Height / 2) - (imagePartToDraw.Height / 2),
+                                imagePartToDraw.Width, imagePartToDraw.Height);
 
-                            DrawImage9SliceScaled(g, fullImage, imagePartToDraw, Rectangle.Round(g.VisibleClipBounds), absMargins);
+                            g.DrawImage(fullImage, dst, imagePartToDraw, GraphicsUnit.Pixel);
                         }
-                        else
+                        break;
+                    case 1: // STRETCH
+                    case 2: // TILE
                         {
-                            // Perform normal, non-uniform scaling
-                            using (ImageAttributes attr = new ImageAttributes())
+                            if (haveSizingMargins && !sizingMarginsZero)
                             {
-                                // avoid interpolation with the default black of outside region
-                                attr.SetWrapMode(System.Drawing.Drawing2D.WrapMode.TileFlipXY);
-                                g.DrawImage(fullImage, Rectangle.Round(g.VisibleClipBounds),
-                                    imagePartToDraw.X,
-                                    imagePartToDraw.Y,
-                                    imagePartToDraw.Width,
-                                    imagePartToDraw.Height,
-                                    GraphicsUnit.Pixel, attr);
+                                Rectangle absMargins = new Rectangle(
+                                    sizingMargins.Left,
+                                    sizingMargins.Top,
+                                    Math.Max(imagePartToDraw.Width - sizingMargins.Left - sizingMargins.Right, 1),
+                                    Math.Max(imagePartToDraw.Height - sizingMargins.Top - sizingMargins.Bottom, 1)
+                                );
+
+                                DrawImage9SliceScaled(g, fullImage, imagePartToDraw, Rectangle.Round(g.VisibleClipBounds), absMargins);
+                            }
+                            else
+                            {
+                                using (ImageAttributes attr = new ImageAttributes())
+                                {
+                                    attr.SetWrapMode(System.Drawing.Drawing2D.WrapMode.TileFlipXY);
+                                    g.DrawImage(fullImage, Rectangle.Round(g.VisibleClipBounds),
+                                        imagePartToDraw.X,
+                                        imagePartToDraw.Y,
+                                        imagePartToDraw.Width,
+                                        imagePartToDraw.Height,
+                                        GraphicsUnit.Pixel, attr);
+                                }
                             }
                         }
-                    }
-                    break;
-                default: // UNSUPPORTED
-                    break;
+                        break;
+                    default:
+                        break;
+                }
             }
         }
 
         private void DrawBackgroundSolidFill(Graphics g)
         {
             Color bgFill = Color.White;
-            if (m_part.States[0].TryGetPropertyValue(IDENTIFIER.FILLCOLOR, ref bgFill))
+            if (TryGetPropertyValue(IDENTIFIER.FILLCOLOR, ref bgFill))
             {
-                g.FillRectangle(new SolidBrush(bgFill), g.ClipBounds);
+                using (var brush = new SolidBrush(bgFill))
+                {
+                    g.FillRectangle(brush, g.ClipBounds);
+                }
             }
         }
 

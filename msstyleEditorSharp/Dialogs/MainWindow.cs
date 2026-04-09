@@ -552,7 +552,7 @@ namespace msstyleEditor
             // only one image tab for a single state
             m_imageView.SetActiveTabs(imgProp != null ? 0 : -1, imgProp != null ? 1 : 0);
 
-            var renderer = new PartRenderer(m_style, part);
+            var renderer = new PartRenderer(m_style, part, state);
             m_renderView.Image = renderer.RenderPreview();
         }
 
@@ -877,6 +877,9 @@ namespace msstyleEditor
             {
                 m_selectedImage = UpdateImageView(imgProp);
             }
+
+            var renderer = new PartRenderer(m_style, m_selection.Part, m_selection.State);
+            m_renderView.Image = renderer.RenderPreview();
         }
 
         private int GetNextImageResourceId()
