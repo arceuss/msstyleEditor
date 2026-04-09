@@ -13,9 +13,13 @@ namespace msstyleEditor.Dialogs
     public partial class ImageView : ToolWindow
     {
         public event EventHandler OnViewBackColorChanged;
+        public event EventHandler ZoomChanged;
+
         public ImageView()
         {
             InitializeComponent();
+            imageControl.EnableInteractiveZoom = true;
+            imageControl.ZoomChanged += OnImageControlZoomChanged;
             whiteToolStripMenuItem.Tag = Color.White;
             greyToolStripMenuItem.Tag = Color.LightGray;
             blackToolStripMenuItem.Tag = Color.Black;
@@ -33,6 +37,8 @@ namespace msstyleEditor.Dialogs
             get { return imageControl.HighlightArea; }
             set { imageControl.HighlightArea = value; }
         }
+
+        public float ViewZoomFactor => imageControl.ZoomFactor;
 
         public Color ViewBackColor
         {
@@ -80,6 +86,11 @@ namespace msstyleEditor.Dialogs
                     ViewBackColor = c;
                 }
             }
+        }
+
+        private void OnImageControlZoomChanged(object sender, EventArgs e)
+        {
+            ZoomChanged?.Invoke(this, e);
         }
 
         // TOOLSTRIP STUFF

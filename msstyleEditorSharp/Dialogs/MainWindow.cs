@@ -59,6 +59,7 @@ namespace msstyleEditor
             m_imageView = new ImageView();
             m_imageView.SelectedIndexChanged += OnImageSelectIndex;
             m_imageView.OnViewBackColorChanged += OnImageViewBackgroundChanged;
+            m_imageView.ZoomChanged += OnImageViewZoomChanged;
             m_imageView.Show(dockPanel, DockState.Document);
             m_imageView.VisibleChanged += (s, e) => { btShowImageView.Checked = m_imageView.Visible; };
             m_imageView.SetActiveTabs(-1, 0);
@@ -210,6 +211,19 @@ namespace msstyleEditor
             {
                 lbImageInfo.Text = $"{img.Width}x{img.Height}px";
                 lbImageInfo.Visible = true;
+            }
+        }
+
+        private void UpdateZoomInfo(Image img, float zoomFactor)
+        {
+            if (img == null)
+            {
+                lbImageZoom.Visible = false;
+            }
+            else
+            {
+                lbImageZoom.Text = $"{(int)Math.Round(zoomFactor * 100.0f)}%";
+                lbImageZoom.Visible = true;
             }
         }
 
@@ -469,6 +483,7 @@ namespace msstyleEditor
                 btImageRecolor.Enabled = false;
                 m_imageView.ViewImage = null;
                 UpdateImageInfo(null);
+                UpdateZoomInfo(null, m_imageView.ViewZoomFactor);
                 return null;
             }
 
@@ -556,6 +571,7 @@ namespace msstyleEditor
             btImageRecolor.Enabled = !xpReadOnly && resource.Data != null;
             m_imageView.ViewImage = img;
             UpdateImageInfo(img);
+            UpdateZoomInfo(img, m_imageView.ViewZoomFactor);
             return resource;
         }
 
@@ -1216,6 +1232,11 @@ namespace msstyleEditor
             if (m_imageView.ViewBackColor == Color.LightGray) btImageBgGrey.Checked = true;
             if (m_imageView.ViewBackColor == Color.Black) btImageBgBlack.Checked = true;
             if (m_imageView.ViewBackColor == Color.MediumVioletRed) btImageBgChecker.Checked = true; // hack
+        }
+
+        private void OnImageViewZoomChanged(object sender, EventArgs e)
+        {
+            UpdateZoomInfo(m_imageView.ViewImage, m_imageView.ViewZoomFactor);
         }
 
         private void OnImageExport(object sender, EventArgs e)
