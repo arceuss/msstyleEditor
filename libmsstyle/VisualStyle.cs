@@ -70,6 +70,10 @@ namespace libmsstyle
         private int m_cmapTotalEntries;
         private int m_originalClassCount;
 
+        // CMAP entry alignment used by the current style (4 bytes on x86,
+        // 8 bytes on x64 in uxtheme parser builds).
+        private int m_cmapEntryAlignment = (IntPtr.Size >= 8) ? 8 : 4;
+
         private byte[] m_originalBcmap;
         private int m_bcmapClassIdOffset = 0;
         private int m_bcmapEntryCount = 0;
@@ -370,19 +374,192 @@ namespace libmsstyle
 
         }
 
+        private static int NormalizeCmapEntryAlignment(int alignment)
+        {
+            return alignment <= 4 ? 4 : 8;
+        }
+
+        private static void WriteCmapEntry(Stream stream, string value, int alignment)
+        {
+            // CMAP entries are UTF-16 strings terminated by NUL and aligned to either
+            // 4 or 8 bytes, depending on the parser implementation.
+            int entryAlignment = NormalizeCmapEntryAlignment(alignment);
+
+            string safeValue = value ?? string.Empty;
+            byte[] encoded = Encoding.Unicode.GetBytes(safeValue);
+
+            int payloadSize = encoded.Length + 2; // include UTF-16 null terminator
+            int paddedSize = (payloadSize + (entryAlignment - 1)) & ~(entryAlignment - 1);
+
+            stream.Write(encoded, 0, encoded.Length);
+            stream.WriteByte(0);
+            stream.WriteByte(0);
+
+            int paddingBytes = paddedSize - payloadSize;
+            for (int i = 0; i < paddingBytes; ++i)
+            {
+                stream.WriteByte(0);
+            }
+        }
+
+        private static int DetectCmapEntryAlignment(byte[] cmap, int fallbackAlignment)
+        {
+            int maxZeroRun = 0;
+            int currentRun = 0;
+            for (int i = 0; i < (cmap?.Length ?? 0); ++i)
+            {
+                if (cmap[i] == 0)
+                {
+                    currentRun++;
+                    if (currentRun > maxZeroRun)
+                    {
+                        maxZeroRun = currentRun;
+                    }
+                }
+                else
+                {
+                    currentRun = 0;
+                }
+            }
+
+            // Empirical discriminator:
+            // - 4-byte aligned CMAP entries top out at ~5 consecutive zero bytes
+            //   (terminator + optional 2-byte padding + next UTF-16 high byte).
+            // - 8-byte aligned CMAP entries often exceed that.
+            if (maxZeroRun > 5)
+            {
+                return 8;
+            }
+
+            if (maxZeroRun > 0)
+            {
+                return 4;
+            }
+
+            return NormalizeCmapEntryAlignment(fallbackAlignment);
+        }
+
+        private bool TryParseAlignedCmapEntries(byte[] cmap, int alignment, out List<string> entries)
+        {
+            entries = new List<string>();
+            if (cmap == null || cmap.Length == 0 || (cmap.Length % 2) != 0)
+            {
+                return false;
+            }
+
+            int entryAlignment = NormalizeCmapEntryAlignment(alignment);
+
+            int cursor = 0;
+            while (cursor < cmap.Length)
+            {
+                int i = cursor;
+                while (i + 1 < cmap.Length)
+                {
+                    if (cmap[i] == 0 && cmap[i + 1] == 0)
+                    {
+                        break;
+                    }
+                    i += 2;
+                }
+
+                if (i + 1 >= cmap.Length)
+                {
+                    return false;
+                }
+
+                int stringBytes = i - cursor;
+                string entry = stringBytes > 0
+                    ? Encoding.Unicode.GetString(cmap, cursor, stringBytes)
+                    : string.Empty;
+                entries.Add(entry);
+
+                int payloadBytes = stringBytes + 2; // include null terminator
+                int entryBytes = (payloadBytes + (entryAlignment - 1)) & ~(entryAlignment - 1);
+                if (entryBytes <= 0)
+                {
+                    return false;
+                }
+
+                cursor += entryBytes;
+                if (cursor > cmap.Length)
+                {
+                    return false;
+                }
+            }
+
+            return cursor == cmap.Length;
+        }
+
+        private List<string> ParseCmapEntries(byte[] cmap)
+        {
+            var entries = new List<string>();
+            if (cmap == null || cmap.Length < 2)
+            {
+                return entries;
+            }
+
+            int first = 0;
+            for (int i = 0; i + 1 < cmap.Length; i += 2)
+            {
+                if (cmap[i] == 0 && cmap[i + 1] == 0)
+                {
+                    int len = Math.Max(0, i - first);
+                    entries.Add(len > 0
+                        ? Encoding.Unicode.GetString(cmap, first, len)
+                        : string.Empty);
+                    first = i + 2;
+                }
+            }
+
+            // Be tolerant of malformed CMAP blobs that are missing a final null terminator.
+            int trailingBytes = cmap.Length - first;
+            trailingBytes -= trailingBytes % 2;
+            if (trailingBytes > 0)
+            {
+                string trailing = Encoding.Unicode.GetString(cmap, first, trailingBytes).TrimEnd('\0');
+                if (!string.IsNullOrEmpty(trailing))
+                {
+                    entries.Add(trailing);
+                }
+            }
+
+            return entries;
+        }
+
         private bool SaveClassmap(IntPtr moduleHandle, IntPtr updateHandle)
         {
-            // Preserve the original CMAP and append only new classes.
-            // The original CMAP contains empty entries that act as separators;
-            // LoadClassmap assigns sequential IDs skipping empties, and the
-            // VARIANT properties reference those same IDs. We must not
-            // reorder or compact the original entries.
+            // Preserve the original CMAP bytes exactly when valid, then append only
+            // newly added classes using uxtheme-compatible alignment.
             var ms = new MemoryStream();
 
-            // Write original CMAP bytes as-is
             if (m_originalCmap != null)
             {
-                ms.Write(m_originalCmap, 0, m_originalCmap.Length);
+                List<string> alignedEntries;
+                if (TryParseAlignedCmapEntries(m_originalCmap, m_cmapEntryAlignment, out alignedEntries))
+                {
+                    ms.Write(m_originalCmap, 0, m_originalCmap.Length);
+                }
+                else
+                {
+                    int alternativeAlignment = m_cmapEntryAlignment == 8 ? 4 : 8;
+                    if (TryParseAlignedCmapEntries(m_originalCmap, alternativeAlignment, out alignedEntries))
+                    {
+                        m_cmapEntryAlignment = alternativeAlignment;
+                        ms.Write(m_originalCmap, 0, m_originalCmap.Length);
+                    }
+                    else
+                    {
+                        // Repair malformed CMAP blobs produced by older builds by rebuilding
+                        // from loaded class names in class-id order.
+                        for (int classId = 0; classId < m_originalClassCount; ++classId)
+                        {
+                            if (m_classes.TryGetValue(classId, out StyleClass cls))
+                            {
+                                WriteCmapEntry(ms, cls.ClassName, m_cmapEntryAlignment);
+                            }
+                        }
+                    }
+                }
             }
 
             // Append new classes (those with IDs beyond what was loaded from original CMAP)
@@ -393,10 +570,7 @@ namespace libmsstyle
 
             foreach (var kv in newClasses)
             {
-                byte[] encoded = Encoding.Unicode.GetBytes(kv.Value.ClassName);
-                ms.Write(encoded, 0, encoded.Length);
-                ms.WriteByte(0); // null terminator (2 bytes for UTF-16)
-                ms.WriteByte(0);
+                WriteCmapEntry(ms, kv.Value.ClassName, m_cmapEntryAlignment);
             }
 
             ushort lid = ResourceAccess.GetFirstLanguageId(moduleHandle, "CMAP", "CMAP");
@@ -414,7 +588,7 @@ namespace libmsstyle
             {
                 int originalEntryCount;
                 List<int> originalParents;
-                if (TryParseBaseClassMap(m_originalBcmap, out originalEntryCount, out originalParents))
+                if (TryParseBaseClassMap(m_originalBcmap, m_originalClassCount, out originalEntryCount, out originalParents))
                 {
                     int updatedEntryCount = originalEntryCount + newClasses.Count;
                     var bcms = new MemoryStream();
@@ -637,34 +811,48 @@ namespace libmsstyle
         void LoadClassmap(byte[] cmap)
         {
             m_originalCmap = (byte[])cmap.Clone();
+            m_classes.Clear();
 
-            int first = 0;
             int numFound = 0;
-            int totalEntries = 0;
+            List<string> entries;
 
-            for (int i = 0; i < cmap.Length; i += 2)
+            // Choose alignment for this style. x86 uxtheme builds use 4-byte CMAP
+            // stepping; x64 builds use 8-byte stepping.
+            m_cmapEntryAlignment = DetectCmapEntryAlignment(cmap, m_cmapEntryAlignment);
+
+            bool cmapWasMalformed = !TryParseAlignedCmapEntries(cmap, m_cmapEntryAlignment, out entries);
+            if (cmapWasMalformed)
             {
-                if (cmap[i] == 0 &&
-                    cmap[i + 1] == 0)
+                int alternativeAlignment = m_cmapEntryAlignment == 8 ? 4 : 8;
+                if (TryParseAlignedCmapEntries(cmap, alternativeAlignment, out entries))
                 {
-                    totalEntries++;
-
-                    // we found the terminator and
-                    // have a non-empty string
-                    if (i - first > 2)
-                    {
-                        StyleClass cls = new StyleClass();
-                        cls.ClassId = numFound;
-                        cls.ClassName = Encoding.Unicode.GetString(cmap, first, i - first);
-                        m_classes[numFound] = cls;
-                        numFound++;
-                    }
-
-                    first = i + 2;
+                    m_cmapEntryAlignment = alternativeAlignment;
+                    cmapWasMalformed = false;
+                }
+                else
+                {
+                    // Compatibility fallback for malformed CMAP resources.
+                    entries = ParseCmapEntries(cmap);
+                    // Mark dirty so a subsequent save can repair the CMAP layout.
+                    m_classmapDirty = true;
                 }
             }
 
-            m_cmapTotalEntries = totalEntries;
+            foreach (string entry in entries)
+            {
+                if (!string.IsNullOrEmpty(entry))
+                {
+                    StyleClass cls = new StyleClass
+                    {
+                        ClassId = numFound,
+                        ClassName = entry
+                    };
+                    m_classes[numFound] = cls;
+                    numFound++;
+                }
+            }
+
+            m_cmapTotalEntries = entries.Count;
             m_originalClassCount = numFound;
         }
 
@@ -691,7 +879,7 @@ namespace libmsstyle
             return mappedIndex < currentEntryCount;
         }
 
-        bool TryParseBaseClassMap(byte[] bcmap, out int entryCount, out List<int> parents)
+        bool TryParseBaseClassMap(byte[] bcmap, int classCount, out int entryCount, out List<int> parents)
         {
             entryCount = 0;
             parents = new List<int>();
@@ -701,14 +889,28 @@ namespace libmsstyle
                 return false;
             }
 
-            entryCount = BitConverter.ToInt32(bcmap, 0);
-            if (entryCount < 0)
+            int declaredEntryCount = BitConverter.ToInt32(bcmap, 0);
+            if (declaredEntryCount < 0)
             {
                 return false;
             }
 
             int maxAvailable = (bcmap.Length - 4) / 4;
-            entryCount = Math.Min(entryCount, maxAvailable);
+            int clampedDeclaredCount = Math.Min(declaredEntryCount, maxAvailable);
+            entryCount = clampedDeclaredCount;
+
+            // Legacy compatibility:
+            // older msstyleEditor builds appended BCMAP parents but forgot to update
+            // the count in the header. If we detect that shape, trust the payload size.
+            if (maxAvailable > clampedDeclaredCount)
+            {
+                int declaredOffset = classCount - clampedDeclaredCount;
+                int availableOffset = classCount - maxAvailable;
+                if (declaredOffset != 4 && availableOffset == 4)
+                {
+                    entryCount = maxAvailable;
+                }
+            }
 
             for (int i = 0; i < entryCount; ++i)
             {
@@ -722,7 +924,7 @@ namespace libmsstyle
         {
             int entryCount;
             List<int> parents;
-            if (!TryParseBaseClassMap(bcmap, out entryCount, out parents))
+            if (!TryParseBaseClassMap(bcmap, m_classes.Count, out entryCount, out parents))
             {
                 m_bcmapClassIdOffset = 0;
                 m_bcmapEntryCount = 0;
