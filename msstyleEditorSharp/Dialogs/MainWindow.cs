@@ -1970,13 +1970,6 @@ namespace msstyleEditor
                 StateId = 0,
                 StateName = "Common"
             };
-            // Add a seed property so the state persists through save/reload
-            var seedProp = new StyleProperty(IDENTIFIER.BGTYPE, IDENTIFIER.ENUM);
-            seedProp.Header.classID = newClassId;
-            seedProp.Header.partID = 0;
-            seedProp.Header.stateID = 0;
-            seedProp.SetValue(2); // BGTYPE = NONE
-            commonState.Properties.Add(seedProp);
 
             commonPart.States[0] = commonState;
             newClass.Parts[0] = commonPart;
@@ -2097,14 +2090,6 @@ namespace msstyleEditor
                 StateName = "Common"
             };
 
-            // Add a seed property so the part persists through save/reload
-            var seedProp = new StyleProperty(IDENTIFIER.BGTYPE, IDENTIFIER.ENUM);
-            seedProp.Header.classID = cls.ClassId;
-            seedProp.Header.partID = newPartId;
-            seedProp.Header.stateID = 0;
-            seedProp.SetValue(2); // BGTYPE = NONE
-            commonState.Properties.Add(seedProp);
-
             newPart.States[0] = commonState;
             cls.Parts[newPartId] = newPart;
 
@@ -2140,14 +2125,6 @@ namespace msstyleEditor
                 StateId = newStateId,
                 StateName = stateName.Trim()
             };
-
-            // Add a seed property so the state persists through save/reload
-            var seedProp = new StyleProperty(IDENTIFIER.BGTYPE, IDENTIFIER.ENUM);
-            seedProp.Header.classID = cls.ClassId;
-            seedProp.Header.partID = part.PartId;
-            seedProp.Header.stateID = newStateId;
-            seedProp.SetValue(2); // BGTYPE = NONE
-            newState.Properties.Add(seedProp);
 
             part.States[newStateId] = newState;
             m_classView.AddStateNode(partNode, newState);
