@@ -34,6 +34,12 @@ namespace msstyleEditor
 
         private TimingFunction m_selectedTimingFunction;
         private AnimationTypeDescriptor m_selectedAnimation;
+
+        // Tracks class IDs that were added during the current session
+        // These classes should be available as base class options even if they
+        // don't have entries in the original BCMAP structure.
+        private HashSet<int> m_sessionAddedClassIds = new HashSet<int>();
+
         public MainWindow(String[] args)
         {
             InitializeComponent();
@@ -319,6 +325,7 @@ namespace msstyleEditor
 
         private void CloseStyle()
         {
+            m_sessionAddedClassIds.Clear();
             m_classView.SetVisualStyle(null);
             m_propertyView.SetStylePart(null, null, null);
 
@@ -1942,10 +1949,8 @@ namespace msstyleEditor
             if (!ShowAddClassDialog(out className, out baseClassId))
                 return;
 
-            // Find next available class ID
-            int newClassId = 0;
-            if (m_style.Classes.Count > 0)
-                newClassId = m_style.Classes.Keys.Max() + 1;
+            // Get the next available class ID
+            int newClassId = m_style.Classes.Count > 0 ? m_style.Classes.Keys.Max() + 1 : 0;
 
             var newClass = new StyleClass
             {
@@ -1978,8 +1983,10 @@ namespace msstyleEditor
 
             m_style.Classes[newClassId] = newClass;
             m_style.MarkClassmapDirty();
+            m_sessionAddedClassIds.Add(newClassId);
             m_classView.AddClassNode(newClass);
         }
+
 
         private bool TryGetSelectedClassNode(out TreeNode classNode, out StyleClass cls)
         {
@@ -2313,12 +2320,22 @@ namespace msstyleEditor
             bool filterToCompatibleBaseClasses = m_style.HasBaseClassMap;
             foreach (var cls in m_style.Classes.OrderBy(kv => kv.Value.ClassName, StringComparer.OrdinalIgnoreCase))
             {
-                if (filterToCompatibleBaseClasses && !m_style.CanUseClassAsBaseClass(cls.Key))
+                // Session-added classes are always available as base class options,
+                // even if they don't have entries in the original BCMAP structure.
+                // This allows newly added classes to be used as base classes for other
+                // new classes during the same editing session.
+                bool isSessionAdded = m_sessionAddedClassIds.Contains(cls.Key);
+                if (filterToCompatibleBaseClasses && !isSessionAdded && !m_style.CanUseClassAsBaseClass(cls.Key))
                 {
                     continue;
                 }
 
-                baseClassOptions.Add(new BaseClassOption(cls.Key, $"{cls.Value.ClassName} (#{cls.Key})"));
+                string displayName = $"{cls.Value.ClassName} (#{cls.Key})";
+                if (isSessionAdded)
+                {
+                    displayName += " [New]";
+                }
+                baseClassOptions.Add(new BaseClassOption(cls.Key, displayName));
             }
 
             using (var form = new Form())

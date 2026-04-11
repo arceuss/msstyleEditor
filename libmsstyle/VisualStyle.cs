@@ -78,6 +78,11 @@ namespace libmsstyle
         private int m_bcmapClassIdOffset = 0;
         private int m_bcmapEntryCount = 0;
         private bool m_bcmapHasCountField = false;
+        private List<int> m_originalBcmapParents = null;
+
+        // Structured representations (new - replaces hex editing approach)
+        private CMap m_cmapStruct;
+        private BcMap m_bcmapStruct;
 
         // XP-specific: maps image file paths (from INI) to BITMAP resource names
         private Dictionary<string, string> m_xpImageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -453,6 +458,12 @@ namespace libmsstyle
             int cursor = 0;
             while (cursor < cmap.Length)
             {
+                // Ensure cursor is at even position for UTF-16LE
+                if (cursor % 2 != 0)
+                {
+                    return false;  // Misaligned - invalid CMAP
+                }
+
                 int i = cursor;
                 while (i + 1 < cmap.Length)
                 {
@@ -463,7 +474,14 @@ namespace libmsstyle
                     i += 2;
                 }
 
-                if (i + 1 >= cmap.Length)
+                // Check if we found a valid null terminator
+                if (i + 1 >= cmap.Length || i < cursor)
+                {
+                    return false;
+                }
+
+                // Must have found an actual null terminator (i should be >= cursor)
+                if (!(cmap[i] == 0 && cmap[i + 1] == 0))
                 {
                     return false;
                 }
@@ -472,7 +490,13 @@ namespace libmsstyle
                 string entry = stringBytes > 0
                     ? Encoding.Unicode.GetString(cmap, cursor, stringBytes)
                     : string.Empty;
-                entries.Add(entry);
+
+                // Skip empty entries (causes blank lines in CMAP output)
+                // Also skip entries that start after the found null terminator
+                if (!string.IsNullOrEmpty(entry))
+                {
+                    entries.Add(entry);
+                }
 
                 int payloadBytes = stringBytes + 2; // include null terminator
                 int entryBytes = (payloadBytes + (entryAlignment - 1)) & ~(entryAlignment - 1);
@@ -505,9 +529,11 @@ namespace libmsstyle
                 if (cmap[i] == 0 && cmap[i + 1] == 0)
                 {
                     int len = Math.Max(0, i - first);
-                    entries.Add(len > 0
-                        ? Encoding.Unicode.GetString(cmap, first, len)
-                        : string.Empty);
+                    // Skip empty entries (causes blank lines in CMAP output)
+                    if (len > 0)
+                    {
+                        entries.Add(Encoding.Unicode.GetString(cmap, first, len));
+                    }
                     first = i + 2;
                 }
             }
@@ -569,81 +595,79 @@ namespace libmsstyle
                 .OrderBy(kv => kv.Key)
                 .ToList();
 
+            // Add new classes to structured CMAP
             foreach (var kv in newClasses)
             {
-                WriteCmapEntry(ms, kv.Value.ClassName, m_cmapEntryAlignment);
+                // Skip empty or whitespace class names
+                if (!string.IsNullOrWhiteSpace(kv.Value.ClassName))
+                {
+                    // Check if this class is already in the Entries (to prevent duplicates on re-save)
+                    bool alreadyExists = m_cmapStruct.Entries.Any(e => e.ClassName == kv.Value.ClassName);
+                    if (!alreadyExists)
+                    {
+                        m_cmapStruct.Entries.Add(new CMapEntry(kv.Value.ClassName));
+                    }
+                }
             }
+
+            // Serialize CMAP from structured data (includes ALL classes, original + new)
+            byte[] cmapData = m_cmapStruct.Serialize();
+            ms.Write(cmapData, 0, cmapData.Length);
 
             ushort lid = ResourceAccess.GetFirstLanguageId(moduleHandle, "CMAP", "CMAP");
             if (lid == 0xFFFF)
             {
                 lid = m_resourceLanguage;
             }
-            byte[] data = ms.ToArray();
-            if (!Win32Api.UpdateResource(updateHandle, "CMAP", "CMAP", lid, data, (uint)data.Length))
+
+            if (!Win32Api.UpdateResource(updateHandle, "CMAP", "CMAP", lid, cmapData, (uint)cmapData.Length))
                 return false;
 
-            // Update BCMAP: preserve original format (with or without count field).
-            if (m_originalBcmap != null && newClasses.Count > 0)
+            // Update BCMAP using structured data
+            if (m_bcmapStruct != null && newClasses.Count > 0)
             {
-                int originalEntryCount;
-                List<int> originalParents;
-                bool hasCountField;
-                if (TryParseBaseClassMap(m_originalBcmap, m_originalClassCount, out originalEntryCount, out originalParents, out hasCountField))
+                int originalEntryCount = m_bcmapEntryCount;
+                List<int> originalParents = m_originalBcmapParents;
+                bool hasCountField = m_bcmapHasCountField;
+
+                // Check for WSB artifact - extra BCMAP entries for non-existent classes
+                // These artifact entries cause issues when adding new classes because
+                // new classes try to reuse these entries (which have wrong parent info)
+                int artifactCount = GetWsArtifactCount();
+                if (artifactCount > 0)
                 {
-                    int updatedEntryCount = originalEntryCount + newClasses.Count;
-                    var bcms = new MemoryStream();
-
-                    // Only write count if original had it (for compatibility with WSB and other tools)
-                    if (hasCountField)
+                    // Remove WSB artifact entries from the end of the BCMAP
+                    // These entries are for classes that don't exist in the CMAP
+                    for (int i = 0; i < artifactCount; i++)
                     {
-                        bcms.Write(BitConverter.GetBytes(updatedEntryCount), 0, 4);
-                    }
-
-                    foreach (int parentIndex in originalParents)
-                    {
-                        bcms.Write(BitConverter.GetBytes(parentIndex), 0, 4);
-                    }
-
-                    foreach (var kv in newClasses)
-                    {
-                        int parentIndex = -1;
-                        int parentClassId = kv.Value.BaseClassId;
-                        if (parentClassId >= 0)
+                        if (m_bcmapStruct.Entries.Count > 0)
                         {
-                            int mapped = parentClassId - m_bcmapClassIdOffset;
-                            if (mapped >= 0 && mapped < updatedEntryCount)
-                            {
-                                parentIndex = mapped;
-                            }
+                            m_bcmapStruct.Entries.RemoveAt(m_bcmapStruct.Entries.Count - 1);
                         }
-
-                        bcms.Write(BitConverter.GetBytes(parentIndex), 0, 4);
                     }
-
-                    ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
-                    if (bcmapLid == 0xFFFF)
-                        bcmapLid = m_resourceLanguage;
-                    byte[] bcmapData = bcms.ToArray();
-                    if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
-                        return false;
                 }
-                else
+
+                // Add new class entries to structured BCMAP
+                foreach (var kv in newClasses.OrderBy(x => x.Key))
                 {
-                    // Fallback for malformed BCMAP data: preserve original behavior.
-                    var bcms = new MemoryStream();
-                    bcms.Write(m_originalBcmap, 0, m_originalBcmap.Length);
-                    foreach (var kv in newClasses)
-                    {
-                        bcms.Write(BitConverter.GetBytes(-1), 0, 4);
-                    }
-                    ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
-                    if (bcmapLid == 0xFFFF)
-                        bcmapLid = m_resourceLanguage;
-                    byte[] bcmapData = bcms.ToArray();
-                    if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
-                        return false;
+                    // BaseClassId may reference another newly added class - convert to parent index
+                    int parentIndex = m_bcmapStruct.BaseClassIdToParentIndex(kv.Value.BaseClassId);
+                    m_bcmapStruct.Entries.Add(new BcMapEntry(parentIndex));
                 }
+
+                // Serialize BCMAP from structured data (includes ALL entries)
+                // Count = Entries.Count (automatic, no manual calculation!)
+                ushort bcmapLid = ResourceAccess.GetFirstLanguageId(moduleHandle, "BCMAP", "BCMAP");
+                if (bcmapLid == 0xFFFF)
+                    bcmapLid = m_resourceLanguage;
+
+                byte[] bcmapData = m_bcmapStruct.Serialize();
+                if (!Win32Api.UpdateResource(updateHandle, "BCMAP", "BCMAP", bcmapLid, bcmapData, (uint)bcmapData.Length))
+                    return false;
+
+                // Update BCMAP entry count to prevent false WSB artifact detection on subsequent saves
+                // This ensures m_bcmapEntryCount accurately reflects the current state
+                m_bcmapEntryCount = m_bcmapStruct.Entries.Count;
             }
 
             return true;
@@ -819,12 +843,16 @@ namespace libmsstyle
             m_originalCmap = (byte[])cmap.Clone();
             m_classes.Clear();
 
+            // Create structured CMAP
+            m_cmapStruct = new CMap();
+
             int numFound = 0;
             List<string> entries;
 
             // Choose alignment for this style. x86 uxtheme builds use 4-byte CMAP
             // stepping; x64 builds use 8-byte stepping.
             m_cmapEntryAlignment = DetectCmapEntryAlignment(cmap, m_cmapEntryAlignment);
+            m_cmapStruct.EntryAlignment = m_cmapEntryAlignment;
 
             bool cmapWasMalformed = !TryParseAlignedCmapEntries(cmap, m_cmapEntryAlignment, out entries);
             if (cmapWasMalformed)
@@ -833,6 +861,7 @@ namespace libmsstyle
                 if (TryParseAlignedCmapEntries(cmap, alternativeAlignment, out entries))
                 {
                     m_cmapEntryAlignment = alternativeAlignment;
+                    m_cmapStruct.EntryAlignment = alternativeAlignment;
                     cmapWasMalformed = false;
                 }
                 else
@@ -841,6 +870,7 @@ namespace libmsstyle
                     entries = ParseCmapEntries(cmap);
                     // Mark dirty so a subsequent save can repair the CMAP layout.
                     m_classmapDirty = true;
+                    m_cmapStruct.WasRepaired = true;
                 }
             }
 
@@ -848,12 +878,17 @@ namespace libmsstyle
             {
                 if (!string.IsNullOrEmpty(entry))
                 {
+                    // Create StyleClass
                     StyleClass cls = new StyleClass
                     {
                         ClassId = numFound,
                         ClassName = entry
                     };
                     m_classes[numFound] = cls;
+
+                    // Create CMapEntry
+                    m_cmapStruct.Entries.Add(new CMapEntry(entry));
+
                     numFound++;
                 }
             }
@@ -869,20 +904,45 @@ namespace libmsstyle
 
         public bool CanUseClassAsBaseClass(int classId)
         {
-            if (!HasBaseClassMap)
+            if (m_bcmapStruct == null || m_bcmapStruct.Entries.Count == 0)
             {
                 return false;
             }
 
-            int mappedIndex = classId - m_bcmapClassIdOffset;
-            if (mappedIndex < 0)
-            {
-                return false;
-            }
+            int mappedIndex = m_bcmapStruct.ClassIdToBcMapIndex(classId);
+            return mappedIndex >= 0 && mappedIndex < m_bcmapStruct.Entries.Count;
+        }
 
-            int currentNewClasses = Math.Max(0, m_classes.Count - m_originalClassCount);
-            int currentEntryCount = m_bcmapEntryCount + currentNewClasses;
-            return mappedIndex < currentEntryCount;
+        /// <summary>
+        /// Detects if the theme has a WSB artifact - an extra BCMAP entry for a class that doesn't exist in CMAP.
+        /// This happens when WSB saves a theme with an empty 4-byte slot at the end of CMAP.
+        /// The BCMAP includes an entry for this non-existent class, which causes issues when adding new classes.
+        /// </summary>
+        /// <returns>True if WSB artifact is detected</returns>
+        public bool HasWsArtifact()
+        {
+            if (m_bcmapEntryCount == 0 || m_originalClassCount == 0)
+                return false;
+
+            int specialClassCount = m_bcmapStruct != null ? m_bcmapStruct.SpecialClassCount : 4;
+            int expectedBcMapEntryCount = m_originalClassCount - specialClassCount;
+
+            // If BCMAP has more entries than expected, there's a WSB artifact
+            return m_bcmapEntryCount > expectedBcMapEntryCount;
+        }
+
+        /// <summary>
+        /// Gets the number of WSB artifact entries (extra BCMAP entries for non-existent classes).
+        /// </summary>
+        public int GetWsArtifactCount()
+        {
+            if (!HasWsArtifact())
+                return 0;
+
+            int specialClassCount = m_bcmapStruct != null ? m_bcmapStruct.SpecialClassCount : 4;
+            int expectedBcMapEntryCount = m_originalClassCount - specialClassCount;
+
+            return m_bcmapEntryCount - expectedBcMapEntryCount;
         }
 
         /// <summary>
@@ -970,22 +1030,42 @@ namespace libmsstyle
             m_bcmapEntryCount = entryCount;
             m_bcmapHasCountField = hasCountField;
 
+            // Create structured BCMAP
+            m_bcmapStruct = new BcMap();
+            m_bcmapStruct.HasCountField = hasCountField;
+            // Fix: Always use 4 for SpecialClassCount (the standard value for Vista+)
+            // The calculated value can be wrong when WSB artifacts are present
+            m_bcmapStruct.SpecialClassCount = 4;
+
+            // Create BcMapEntry objects from loaded parent indices
+            foreach (int parentIndex in parents)
+            {
+                m_bcmapStruct.Entries.Add(new BcMapEntry(parentIndex));
+            }
+
             // BCMAP indices are in the internal class index space used by uxtheme.
             // Map them into our CMAP-based class IDs using a count-derived offset.
             m_bcmapClassIdOffset = Math.Max(0, m_classes.Count - entryCount);
 
+            // Store the original parents for use during save
+            m_originalBcmapParents = new List<int>();
+            for (int i = 0; i < entryCount && i < parents.Count; ++i)
+            {
+                m_originalBcmapParents.Add(parents[i]);
+            }
+
             for (int i = 0; i < entryCount; ++i)
             {
-                int classId = i + m_bcmapClassIdOffset;
+                int classId = m_bcmapStruct.BcMapIndexToClassId(i);
                 if (!m_classes.TryGetValue(classId, out StyleClass cls))
                 {
                     continue;
                 }
 
-                int parentIndex = parents[i];
+                int parentIndex = m_bcmapStruct.Entries[i].ParentIndex;
                 if (parentIndex >= 0)
                 {
-                    int parentClassId = parentIndex + m_bcmapClassIdOffset;
+                    int parentClassId = m_bcmapStruct.BcMapIndexToClassId(parentIndex);
                     cls.BaseClassId = m_classes.ContainsKey(parentClassId)
                         ? parentClassId
                         : -1;

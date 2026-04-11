@@ -63,6 +63,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Animation.cs" />
+    <Compile Include="BcMap.cs" />
+    <Compile Include="CMap.cs" />
     <Compile Include="CubicBezierTimingFunction.cs" />
     <Compile Include="ImageConverter.cs" />
     <Compile Include="Margins.cs" />
