@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -650,8 +650,8 @@ namespace libmsstyle
                 // Add new class entries to structured BCMAP
                 foreach (var kv in newClasses.OrderBy(x => x.Key))
                 {
-                    // BaseClassId may reference another newly added class - convert to parent index
-                    int parentIndex = m_bcmapStruct.BaseClassIdToParentIndex(kv.Value.BaseClassId);
+                    int effectiveBaseClassId = GetEffectiveBaseClassId(kv.Value);
+                    int parentIndex = m_bcmapStruct.BaseClassIdToParentIndex(effectiveBaseClassId);
                     m_bcmapStruct.Entries.Add(new BcMapEntry(parentIndex));
                 }
 
@@ -912,6 +912,49 @@ namespace libmsstyle
             int mappedIndex = m_bcmapStruct.ClassIdToBcMapIndex(classId);
             return mappedIndex >= 0 && mappedIndex < m_bcmapStruct.Entries.Count;
         }
+
+        public int GetEffectiveBaseClassId(StyleClass cls)
+        {
+            if (cls == null)
+            {
+                return -1;
+            }
+
+            if (cls.BaseClassId >= 0)
+            {
+                return m_classes.ContainsKey(cls.BaseClassId)
+                    ? cls.BaseClassId
+                    : -1;
+            }
+
+            return FindImplicitBaseClassId(cls.ClassName);
+        }
+
+        private int FindImplicitBaseClassId(string className)
+        {
+            if (string.IsNullOrWhiteSpace(className))
+            {
+                return -1;
+            }
+
+            int separatorIndex = className.LastIndexOf("::", StringComparison.Ordinal);
+            if (separatorIndex < 0 || separatorIndex + 2 >= className.Length)
+            {
+                return -1;
+            }
+
+            string baseClassName = className.Substring(separatorIndex + 2);
+            foreach (var cls in m_classes)
+            {
+                if (string.Equals(cls.Value.ClassName, baseClassName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return cls.Key;
+                }
+            }
+
+            return -1;
+        }
+
 
         /// <summary>
         /// Detects if the theme has a WSB artifact - an extra BCMAP entry for a class that doesn't exist in CMAP.
