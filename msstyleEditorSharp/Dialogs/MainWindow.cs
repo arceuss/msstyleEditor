@@ -191,14 +191,19 @@ namespace msstyleEditor
                 return "No selection";
             }
 
-            if (m_style != null && cls.BaseClassId >= 0)
+            if (m_style != null)
             {
-                if (m_style.Classes.TryGetValue(cls.BaseClassId, out StyleClass baseClass))
+                int effectiveBaseClassId = m_style.GetEffectiveBaseClassId(cls);
+                if (effectiveBaseClassId >= 0)
                 {
-                    return $"{cls.ClassName} (#{cls.ClassId}) inherits from {baseClass.ClassName} (#{baseClass.ClassId})";
-                }
+                    if (m_style.Classes.TryGetValue(effectiveBaseClassId, out StyleClass baseClass))
+                    {
+                        string inheritanceMode = cls.BaseClassId >= 0 ? "inherits from" : "implicitly inherits from";
+                        return $"{cls.ClassName} (#{cls.ClassId}) {inheritanceMode} {baseClass.ClassName} (#{baseClass.ClassId})";
+                    }
 
-                return $"{cls.ClassName} (#{cls.ClassId}) inherits from Unknown (#{cls.BaseClassId})";
+                    return $"{cls.ClassName} (#{cls.ClassId}) inherits from Unknown (#{effectiveBaseClassId})";
+                }
             }
 
             return $"{cls.ClassName} (#{cls.ClassId}) has no base class";

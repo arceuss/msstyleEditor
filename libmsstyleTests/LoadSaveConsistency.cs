@@ -1,4 +1,4 @@
-﻿using libmsstyle;
+using libmsstyle;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
 using System.Collections;
@@ -117,6 +117,35 @@ namespace libmsstyleTests
                 AssertClass(reloaded, classId3, "TrayNotifyVertComposited::Button", baseVertButtonId);
             }
         }
+
+        [TestMethod]
+        public void VerifyAddClassInfersImplicitBaseAndPreservesExplicitBase()
+        {
+            const string sourceFile = @"..\..\..\styles\w11_luna_mod\Luna.msstyles";
+
+            using (var style = new VisualStyle())
+            using (var reloaded = new VisualStyle())
+            {
+                style.Load(sourceFile);
+
+                int buttonClassId = style.Classes
+                    .Where(kv => kv.Value.ClassName == "Button")
+                    .Select(kv => kv.Key)
+                    .First();
+
+                int implicitBaseClassId = AddClass(style, "Test::Button", -1);
+                int explicitBaseClassId = AddClass(style, "Test2::Button", implicitBaseClassId);
+
+                style.MarkClassmapDirty();
+                style.Save("tmp_addclass.msstyles", true);
+
+                reloaded.Load("tmp_addclass.msstyles");
+
+                AssertClass(reloaded, implicitBaseClassId, "Test::Button", buttonClassId);
+                AssertClass(reloaded, explicitBaseClassId, "Test2::Button", implicitBaseClassId);
+            }
+        }
+
 
         int AddClass(VisualStyle style, string className, int baseClassId)
         {
