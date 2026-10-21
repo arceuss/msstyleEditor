@@ -235,18 +235,23 @@ namespace libmsstyle
 
         private bool SaveResources(IntPtr moduleHandle, IntPtr updateHandle)
         {
+            var updates = new List<KeyValuePair<StyleResource, byte[]>>();
             foreach (var res in m_resourceUpdates)
             {
-                byte[] data = null;
                 try
                 {
-                    data = File.ReadAllBytes(res.Value);
+                    updates.Add(new KeyValuePair<StyleResource, byte[]>(res.Key, File.ReadAllBytes(res.Value)));
                 }
                 catch (Exception)
                 {
                     return false;
                 }
+            }
+            updates.AddRange(m_resourceDataUpdates);
 
+            foreach (var res in updates)
+            {
+                byte[] data = res.Value;
                 string type = "";
                 switch (res.Key.Type)
                 {
@@ -273,7 +278,10 @@ namespace libmsstyle
         }
 
 
-        private bool SaveProperties(IntPtr moduleHandle, IntPtr updateHandle)
+        /// <summary>
+        /// Serializes the property tree into the VARIANT/NORMAL record stream, exactly as Save() writes it.
+        /// </summary>
+        public byte[] SerializeProperties()
         {
             MemoryStream ms = new MemoryStream(4096);
             BinaryWriter bw = new BinaryWriter(ms);
@@ -298,9 +306,14 @@ namespace libmsstyle
                 }
             }
 
+            return ms.ToArray();
+        }
+
+        private bool SaveProperties(IntPtr moduleHandle, IntPtr updateHandle)
+        {
             // lang id
             ushort lid = ResourceAccess.GetFirstLanguageId(moduleHandle, "VARIANT", "NORMAL");
-            byte[] data = ms.ToArray();
+            byte[] data = SerializeProperties();
             return Win32Api.UpdateResource(updateHandle, "VARIANT", "NORMAL", lid, data, (uint)data.Length);
         }
 
@@ -1120,22 +1133,32 @@ namespace libmsstyle
             }
         }
 
+        private readonly List<string> m_loadDiagnostics = new List<string>();
+        /// <summary>
+        /// Problems found while parsing the property stream (skipped bytes, records that failed to
+        /// decode, records pointing at unknown classes). Empty means every byte was accounted for.
+        /// </summary>
+        public IReadOnlyList<string> LoadDiagnostics => m_loadDiagnostics;
+
         void LoadProperties(byte[] pmap)
         {
             int cursor = 0;
 
             while (cursor < pmap.Length - 4)
             {
+                int recordStart = cursor;
+                if (IsZeroTail(pmap, cursor))
+                {
+                    break;
+                }
                 try
                 {
                     StyleProperty prop = PropertyStream.ReadNextProperty(pmap, ref cursor);
 
-                    //Debug.WriteLine("[N: {0}, T: {1}, C: {2}, P: {3}, S: {4}]", prop.Header.nameID, prop.Header.typeID, prop.Header.classID, prop.Header.partID, prop.Header.stateID);
-
                     StyleClass cls;
                     if (!m_classes.TryGetValue(prop.Header.classID, out cls))
                     {
-                        throw new Exception("Found property with unknown class ID");
+                        throw new Exception($"property {prop.Header.nameID} references unknown class ID {prop.Header.classID}");
                     }
 
                     StylePart part;
@@ -1165,11 +1188,32 @@ namespace libmsstyle
                     state.Properties.Add(prop);
                     ++m_numProps;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-
+                    m_loadDiagnostics.Add($"VARIANT offset {recordStart}: {ex.Message}");
+                    // a decode failure that didn't move the cursor would spin forever.
+                    if (cursor <= recordStart)
+                    {
+                        m_loadDiagnostics.Add($"VARIANT offset {recordStart}: stopped parsing, {pmap.Length - recordStart} bytes not loaded");
+                        break;
+                    }
                 }
             }
+
+            // the loop leaves up to 4 bytes alone; zero padding is fine, anything else isn't.
+            if (cursor < pmap.Length && !IsZeroTail(pmap, cursor))
+            {
+                m_loadDiagnostics.Add($"VARIANT offset {cursor}: {pmap.Length - cursor} trailing bytes aren't a record or padding");
+            }
+        }
+
+        private static bool IsZeroTail(byte[] data, int start)
+        {
+            for (int i = start; i < data.Length; ++i)
+            {
+                if (data[i] != 0) return false;
+            }
+            return true;
         }
 
         void LoadAMap(byte[] amap)
@@ -1306,6 +1350,15 @@ namespace libmsstyle
             }
         }
 
+        /// <summary>
+        /// Bytes of an IMAGE or STREAM resource as stored in the loaded file (queued updates ignored).
+        /// </summary>
+        public byte[] GetRawResource(string type, int id)
+        {
+            if (id <= 0 || id > 0xFFFF) return null;
+            return ResourceAccess.GetResource(m_moduleHandle, type, (uint)id);
+        }
+
         public string GetQueuedResourceUpdate(int nameId, StyleResourceType type)
         {
             string path;
@@ -1322,6 +1375,18 @@ namespace libmsstyle
         {
             var key = new StyleResource(null, nameId, type);
             m_resourceUpdates[key] = pathToNew;
+        }
+
+        private readonly Dictionary<StyleResource, byte[]> m_resourceDataUpdates = new Dictionary<StyleResource, byte[]>();
+
+        /// <summary>
+        /// Writes these bytes as IMAGE/STREAM resource <paramref name="nameId"/> on the next Save().
+        /// Used for resources that don't exist as a file on disk (imported or newly packed atlases).
+        /// </summary>
+        public void QueueResourceData(int nameId, StyleResourceType type, byte[] data)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            m_resourceDataUpdates[new StyleResource(null, nameId, type)] = data;
         }
     }
 }

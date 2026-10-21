@@ -1,0 +1,986 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+
+namespace libmsstyle.Import
+{
+    /// <summary>
+    /// Ports the look of a customized windows 7 style onto a known-working windows 10 style.
+    ///
+    /// Three inputs: the custom style (source), stock win7 aero (base, the common ancestor) and
+    /// the win10 template. Only what the source changed relative to the base is carried over, and
+    /// only where the template still has the stock value. Everything the template adapted for
+    /// win10 stays. The output is a modified copy of the template file: class map, base class map,
+    /// animation map and every unrelated resource are left byte for byte.
+    /// </summary>
+    public class Win7StyleImporter
+    {
+        public const string DwmClass = "DWMWindow";
+
+        private readonly Win7ImportOptions m_opt;
+        private readonly ImportReport m_report = new ImportReport();
+        private SemanticModel m_base, m_source, m_target;
+        private ResourceIdAllocator m_alloc;
+        private readonly Dictionary<string, ArgbImage> m_decoded = new Dictionary<string, ArgbImage>();
+        // properties already rewritten, so the generic pass can't touch DWM records twice.
+        private readonly HashSet<StyleProperty> m_touched = new HashSet<StyleProperty>();
+
+        internal List<SpriteExpectation> SpriteChecks { get; } = new List<SpriteExpectation>();
+        internal Dictionary<StyleProperty, string> ChangedProperties { get; } = new Dictionary<StyleProperty, string>();
+
+        public Win7StyleImporter(Win7ImportOptions options)
+        {
+            m_opt = options ?? throw new ArgumentNullException(nameof(options));
+        }
+
+        public static ImportReport Run(Win7ImportOptions options)
+        {
+            return new Win7StyleImporter(options).Execute();
+        }
+
+        public ImportReport Execute()
+        {
+            var r = m_report;
+            r.DryRun = m_opt.DryRun;
+            r.Inputs["source"] = m_opt.SourcePath;
+            r.Inputs["base"] = string.IsNullOrEmpty(m_opt.BasePath) ? "(built-in stock windows 7 aero)" : m_opt.BasePath;
+            r.Inputs["template"] = m_opt.TemplatePath;
+
+            string candidate = null;
+            try
+            {
+                if (string.IsNullOrEmpty(m_opt.BasePath)) m_opt.BasePath = Win7StockAero.GetPath();
+                CheckPaths();
+                using (var baseStyle = new VisualStyle())
+                using (var sourceStyle = new VisualStyle())
+                using (var target = new VisualStyle())
+                using (var targetInv = new ResourceInventory(m_opt.TemplatePath))
+                {
+                    LoadChecked(baseStyle, m_opt.BasePath, "base", Platform.Win7);
+                    LoadChecked(sourceStyle, m_opt.SourcePath, "source", Platform.Win7);
+                    LoadChecked(target, m_opt.TemplatePath, "template", Platform.Win10);
+                    if (r.Errors.Count > 0)
+                    {
+                        return Finish(null);
+                    }
+
+                    m_source = new SemanticModel(sourceStyle);
+                    m_base = new SemanticModel(baseStyle);
+                    m_target = new SemanticModel(target);
+                    if (baseStyle.StringTables.All(t => t.Value.Count == 0))
+                    {
+                        // stock win7 keeps its strings in a .mui that isn't shipped with the file.
+                        r.Notes.Add("base style has no string table, so string/font properties are compared by id: a source that edits the text of an unchanged id isn't detected.");
+                    }
+
+                    // an id with several language variants can't be shared by content: the bytes the
+                    // loader picks depend on the language, so only single-language ids are reused.
+                    var multiLang = new HashSet<string>(targetInv.Entries.GroupBy(e => e.Type + "/" + e.Name).Where(g => g.Count() > 1).Select(g => g.Key));
+                    m_alloc = new ResourceIdAllocator(targetInv.Entries
+                        .Where(e => e.Type == "IMAGE" || e.Type == "STREAM")
+                        .Select(e =>
+                        {
+                            e.TryGetIntName(out int id);
+                            return Tuple.Create(e.Type, id, multiLang.Contains(e.Type + "/" + e.Name) ? null : e.Sha1);
+                        }));
+
+                    CompareClasses();
+                    BuildThreeWayDiff();
+                    new DwmImport(this).Run();
+                    MergeGenericClasses();
+                    ReportTemplateOnlyImages();
+
+                    foreach (var add in m_alloc.Added)
+                    {
+                        var parts = add.Key.Split('/');
+                        int id = int.Parse(parts[1]);
+                        target.QueueResourceData(id, parts[0] == "IMAGE" ? StyleResourceType.Image : StyleResourceType.Atlas, add.Value);
+                    }
+                    r.Count("resources-added", m_alloc.Added.Count);
+
+                    // validate in a folder of its own, with Shell and the .mui next to it, named like the
+                    // final file: string tables of mui-based templates only resolve that way.
+                    string name = Path.GetFileName(m_opt.DryRun ? m_opt.TemplatePath : m_opt.OutputPath);
+                    m_validationDir = m_opt.DryRun
+                        ? Path.Combine(Path.GetTempPath(), "msstyle-import-" + Guid.NewGuid().ToString("N"))
+                        : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_opt.OutputPath)), ".msstyle-import-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(m_validationDir);
+                    candidate = Path.Combine(m_validationDir, name);
+                    // added font strings only reach the file through the standalone path, which
+                    // writes the string tables into the .msstyles (and drops a .mui link, if any).
+                    target.Save(candidate, StringsAdded);
+                    StyleCompanions.CopyAlongside(CompanionSource, candidate);
+                }
+
+                r.Validation = new StyleValidator(m_opt.TemplatePath, candidate, m_alloc.Added, SpriteChecks, ChangedProperties.Values.ToList(),
+                    StringsAdded, GeometryWaivers, AddedRecords).Validate();
+                foreach (var e in r.Validation.Errors) r.Errors.Add("validation: " + e);
+                foreach (var w in r.Validation.Warnings) r.Warnings.Add("validation: " + w);
+                return Finish(candidate);
+            }
+            catch (Exception ex)
+            {
+                r.Errors.Add("import aborted: " + ex.Message);
+                return Finish(candidate);
+            }
+        }
+
+        private string m_validationDir;
+        private string CompanionSource => string.IsNullOrEmpty(m_opt.CompanionSourcePath) ? m_opt.TemplatePath : m_opt.CompanionSourcePath;
+
+        private ImportReport Finish(string candidate)
+        {
+            var r = m_report;
+            r.Status = r.Errors.Count == 0 ? ImportStatus.ReadyForVmTest : ImportStatus.Blocked;
+            if (candidate != null && File.Exists(candidate) && r.Status == ImportStatus.ReadyForVmTest && !m_opt.DryRun)
+            {
+                if (File.Exists(m_opt.OutputPath)) File.Delete(m_opt.OutputPath);
+                File.Move(candidate, m_opt.OutputPath);
+                r.Output = m_opt.OutputPath;
+                try
+                {
+                    var copied = StyleCompanions.CopyAlongside(CompanionSource, m_opt.OutputPath);
+                    r.Notes.Add(copied.Count > 0
+                        ? "copied next to the candidate (windows needs them to load the shellstyle and strings): " + string.Join(", ", copied)
+                        : $"no Shell folder or .mui next to \"{CompanionSource}\"; without a Shell folder windows can't load a shellstyle for this style.");
+                }
+                catch (Exception ex)
+                {
+                    r.Warnings.Add("couldn't copy the Shell / language folders next to the candidate: " + ex.Message);
+                }
+            }
+            if (m_validationDir != null)
+            {
+                try { Directory.Delete(m_validationDir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+
+            if (r.Status == ImportStatus.Blocked)
+                r.StatusText = "blocked: offline validation or import failed, no candidate was kept.";
+            else if (m_opt.DryRun)
+                r.StatusText = "dry run passed offline validation. nothing was written; rerun without dry run to get the candidate.";
+            else
+                r.StatusText = "candidate passed offline validation. unverified visually and never applied: test it in a disposable win10 vm with a snapshot before using it anywhere else.";
+            return r;
+        }
+
+        private void CheckPaths()
+        {
+            foreach (var p in new[] { m_opt.SourcePath, m_opt.BasePath, m_opt.TemplatePath })
+            {
+                if (string.IsNullOrEmpty(p) || !File.Exists(p))
+                    throw new FileNotFoundException($"input style not found: \"{p}\"");
+            }
+            if (m_opt.DryRun) return;
+            if (string.IsNullOrEmpty(m_opt.OutputPath))
+                throw new ArgumentException("no output path given");
+
+            string outFull = Path.GetFullPath(m_opt.OutputPath);
+            string outDir = Path.GetDirectoryName(outFull);
+            foreach (var p in new[] { m_opt.SourcePath, m_opt.BasePath, m_opt.TemplatePath })
+            {
+                string full = Path.GetFullPath(p);
+                if (string.Equals(full, outFull, StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException($"output \"{outFull}\" would overwrite an input");
+                if (string.Equals(Path.GetDirectoryName(full), outDir, StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException($"output directory \"{outDir}\" holds an input style; pick a separate scratch directory");
+            }
+            string win = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (!string.IsNullOrEmpty(win) && outFull.StartsWith(win.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("refusing to write below the windows directory");
+            Directory.CreateDirectory(outDir);
+        }
+
+        private void LoadChecked(VisualStyle style, string path, string role, Platform expected)
+        {
+            style.Load(path);
+            foreach (var d in style.LoadDiagnostics)
+            {
+                m_report.Errors.Add($"{role} \"{path}\" has property stream damage: {d}");
+            }
+            bool ok = expected == Platform.Win7
+                ? style.Platform == Platform.Win7 || style.Platform == Platform.Vista
+                : style.Platform == Platform.Win10 || style.Platform == Platform.Win11;
+            if (!ok)
+            {
+                m_report.Errors.Add($"{role} \"{path}\" was detected as {style.Platform.ToDisplayString()}, expected {expected.ToDisplayString()}.");
+            }
+            m_report.Notes.Add($"{role}: {style.Platform.ToDisplayString()}, {style.Classes.Count} classes, {style.NumProperties} properties.");
+        }
+
+        /// <summary>
+        /// win10 templates often add IMAGEFILE4-7 (192-384 dpi) next to the win7 96-144 dpi set.
+        /// The source has nothing for those, so at high dpi such a part still draws the template
+        /// picture. Not an error, but the user should know which parts are mixed.
+        /// </summary>
+        private void ReportTemplateOnlyImages()
+        {
+            var byProp = m_target.Entries.ToDictionary(e => e.Property);
+            var changedStates = new HashSet<string>(ChangedProperties.Keys
+                .Where(p => byProp.TryGetValue(p, out var e) && e.ResourceType == "IMAGE")
+                .Select(p => byProp[p].StateKey));
+            var mixed = m_target.Entries
+                .Where(e => e.ResourceType == "IMAGE" && changedStates.Contains(e.StateKey)
+                    && !m_touched.Contains(e.Property) && !m_base.ByKey.ContainsKey(e.Key))
+                .GroupBy(e => e.StateKey)
+                .ToList();
+            foreach (var g in mixed)
+            {
+                m_report.TemplateOnlyImages.Add($"{g.Key}: {string.Join(", ", g.Select(e => e.PropertyName))}");
+            }
+            m_report.Count("states-with-template-only-images", mixed.Count);
+        }
+
+        /// <summary>
+        /// Key-by-key comparison of all three styles, before anything is modified. Keys are
+        /// class|part name|state|property#type, never numeric class/part ids.
+        /// </summary>
+        private void BuildThreeWayDiff()
+        {
+            var r = m_report;
+            var keys = new HashSet<string>(m_base.ByKey.Keys);
+            keys.UnionWith(m_source.ByKey.Keys);
+            keys.UnionWith(m_target.ByKey.Keys);
+            foreach (var key in keys.OrderBy(k => k, StringComparer.Ordinal))
+            {
+                m_base.ByKey.TryGetValue(key, out var b);
+                m_source.ByKey.TryGetValue(key, out var s);
+                m_target.ByKey.TryGetValue(key, out var a);
+                var any = b ?? s ?? a;
+                var cats = new List<string>();
+                if (b != null && s != null && !Same(m_base, b, m_source, s)) cats.Add("source-changed");
+                if (b == null && s != null) cats.Add("source-only");
+                if (b != null && s == null) cats.Add("source-removed");
+                if (b != null && a != null && !Same(m_base, b, m_target, a)) cats.Add("template-adapted");
+                if (b == null && s == null && a != null) cats.Add("template-only");
+                if (b != null && a == null) cats.Add("win7-only");
+                if (!any.PartNameKnown) cats.Add("numeric-part");
+                if (cats.Count == 0 || (cats.Count == 1 && cats[0] == "numeric-part"))
+                {
+                    r.ThreeWaySummary.TryGetValue("identical", out int n);
+                    r.ThreeWaySummary["identical"] = n + 1;
+                    continue;
+                }
+                foreach (var c in cats)
+                {
+                    r.ThreeWaySummary.TryGetValue(c, out int n);
+                    r.ThreeWaySummary[c] = n + 1;
+                }
+                if (cats.Contains("source-changed") && cats.Contains("template-adapted"))
+                {
+                    r.ThreeWaySummary.TryGetValue("conflict", out int n);
+                    r.ThreeWaySummary["conflict"] = n + 1;
+                }
+                r.ThreeWayEntries.Add(new DiffEntry
+                {
+                    Category = string.Join(",", cats),
+                    Class = any.ClassName,
+                    Part = any.PartName,
+                    State = any.StateId,
+                    Property = any.PropertyName + "#" + any.TypeId + (any.Occurrence > 0 ? "@" + any.Occurrence : ""),
+                    Base = b?.Value == b?.RawValue ? b?.RawValue : $"{b?.RawValue} ({b?.Value})",
+                    Source = s?.Value == s?.RawValue ? s?.RawValue : $"{s?.RawValue} ({s?.Value})",
+                    Target = a?.Value == a?.RawValue ? a?.RawValue : $"{a?.RawValue} ({a?.Value})",
+                });
+            }
+        }
+
+        private void CompareClasses()
+        {
+            foreach (var name in m_source.ClassesByName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!m_target.ClassesByName.ContainsKey(name))
+                    m_report.SourceClassesMissingInTarget.Add(name);
+            }
+            foreach (var dup in m_target.DuplicateClassNames)
+            {
+                m_report.Warnings.Add($"template has class \"{dup}\" more than once; only the first is addressed by name.");
+            }
+
+            foreach (var kv in m_base.ClassesByName)
+            {
+                if (!m_target.ClassesByName.TryGetValue(kv.Key, out var t)) continue;
+                string b = BaseName(m_base, kv.Value), tb = BaseName(m_target, t);
+                if (!string.Equals(b, tb, StringComparison.OrdinalIgnoreCase))
+                    m_report.InheritanceDifferences.Add($"{kv.Key}: win7 base \"{b ?? "-"}\", template base \"{tb ?? "-"}\" (template kept)");
+                string s = m_source.ClassesByName.TryGetValue(kv.Key, out var sc) ? BaseName(m_source, sc) : null;
+                if (!string.Equals(b, s, StringComparison.OrdinalIgnoreCase))
+                    m_report.Warnings.Add($"source changed the base class of {kv.Key} from \"{b ?? "-"}\" to \"{s ?? "-"}\"; inheritance changes aren't imported.");
+            }
+        }
+
+        private static string BaseName(SemanticModel m, StyleClass c)
+        {
+            return c.BaseClassId >= 0 && m.Style.Classes.TryGetValue(c.BaseClassId, out var b) ? b.ClassName : null;
+        }
+
+        // ---- generic three-way merge -------------------------------------------------------
+
+        private void MergeGenericClasses()
+        {
+            var keys = new HashSet<string>(m_source.ByKey.Keys);
+            keys.UnionWith(m_base.ByKey.Keys);
+            var locked = LockedGeometryParts(keys);
+
+            foreach (var key in keys.OrderBy(k => k, StringComparer.Ordinal))
+            {
+                m_base.ByKey.TryGetValue(key, out var b);
+                m_source.ByKey.TryGetValue(key, out var s);
+                var any = s ?? b;
+                if (string.Equals(any.ClassName, DwmClass, StringComparison.OrdinalIgnoreCase)) continue;
+                if (m_target.DuplicateClassNames.Contains(any.ClassName)) 
+                {
+                    if (s != null && b != null && !Same(m_base, b, m_source, s))
+                        Decide(any, "skipped-ambiguous-class", "class name occurs more than once in the template", b, s, null, null);
+                    continue;
+                }
+                m_target.ByKey.TryGetValue(key, out var a);
+                if (a != null && b != null && s != null && GeometryIds.Contains(any.NameId) && locked.TryGetValue(any.PartKey, out string why)
+                    && !Same(m_base, b, m_source, s) && !Same(m_source, s, m_target, a))
+                {
+                    Decide(s, "kept-target", why, b, s, a, null);
+                    m_report.Count("kept-target-geometry-group");
+                    continue;
+                }
+                ThreeWay(any.ClassName, any.PartName, any.StateId, any.PropertyName, b, s, a, m_source, any.PartNameKnown);
+            }
+
+            PropagateImages(locked);
+        }
+
+        // template IMAGE id -> ids it was replaced with by the merge.
+        private readonly Dictionary<int, HashSet<int>> m_imageReplacements = new Dictionary<int, HashSet<int>>();
+
+        private void RecordImageReplacement(SemanticEntry a)
+        {
+            if (a.ResourceType != "IMAGE") return;
+            int now = a.Property.Header.shortFlag & 0xFFFF;
+            if (now == a.ResourceId) return;
+            if (!m_imageReplacements.TryGetValue(a.ResourceId, out var set)) m_imageReplacements[a.ResourceId] = set = new HashSet<int>();
+            set.Add(now);
+        }
+
+        /// <summary>
+        /// Second pass over template images nobody touched, including template-only properties
+        /// (win10 classes, dark mode copies, extra dpi sizes):
+        /// 1. the picture is a stock win7 picture (pixel compare) -> the source's version of it;
+        /// 2. the property uses the same IMAGE id as a property the merge already replaced -> the
+        ///    same replacement, as long as every replacement of that id agrees.
+        /// Locked geometry parts and DWMWindow (atlas based) are left out.
+        /// </summary>
+        private void PropagateImages(Dictionary<string, string> locked)
+        {
+            var r = m_report;
+            IEnumerable<SemanticEntry> Candidates() => m_target.Entries.Where(e =>
+                e.ResourceType == "IMAGE"
+                && !m_touched.Contains(e.Property)
+                && !string.Equals(e.ClassName, DwmClass, StringComparison.OrdinalIgnoreCase)
+                && !m_target.DuplicateClassNames.Contains(e.ClassName)
+                && !locked.ContainsKey(e.PartKey)
+                && !KeyPattern.Matches(m_opt.Exclude, e.ClassName, e.PartName, e.PropertyName)
+                // still the stock picture of its own key: the three-way merge already decided it, e.g.
+                // shine keeps RESTOREBUTTON stock while aero11 merely shares its id with MAXBUTTON.
+                && !(m_base.ByKey.TryGetValue(e.Key, out var own) && Same(m_base, own, m_target, e)));
+
+            foreach (var e in Candidates().ToList())
+            {
+                var alias = FindImageAlias(e);
+                if (alias == null || Same(m_source, alias, m_target, e)) continue;
+                m_base.ByKey.TryGetValue(e.Key, out var b);
+                ApplyExtra(e, alias, b, "applied-stock-copy",
+                    $"template shows the stock {alias.ClassName}|{alias.PartName}|{alias.PropertyName} picture here; took the source's version of it");
+            }
+
+            foreach (var e in Candidates().ToList())
+            {
+                if (!m_imageReplacements.TryGetValue(e.ResourceId, out var set)) continue;
+                if (set.Count != 1)
+                {
+                    r.Warnings.Add($"{e.ClassName}|{e.PartName}|S{e.StateId}|{e.PropertyName}: shares IMAGE {e.ResourceId} with properties that got different pictures ({string.Join(", ", set)}); left as is.");
+                    continue;
+                }
+                int id = set.First();
+                e.Property.SetValue(id);
+                MarkTouched(e.Property, $"{e.ClassName}|{e.PartName}|S{e.StateId}|{e.PropertyName}");
+                Decide(e, "applied-shared-id", $"uses IMAGE {e.ResourceId} like properties that were replaced; follows them to {id}", null, null, e, id.ToString());
+                r.Count("applied-shared-id");
+            }
+        }
+
+        private void ApplyExtra(SemanticEntry a, SemanticEntry from, SemanticEntry b, string action, string reason)
+        {
+            if (!ApplySourceValue(m_source, from, a.Property, out string err))
+            {
+                m_report.Warnings.Add($"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}: not applied, {err}");
+                return;
+            }
+            MarkTouched(a.Property, $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}");
+            RecordImageReplacement(a);
+            Decide(a, action, reason, b, from, a, SemanticModel.FormatValue(a.Property));
+            m_report.Count(action);
+        }
+
+        // a strip image, its frame count, layout and nine-grid margins only make sense together.
+        private static readonly HashSet<int> GeometryIds = new HashSet<int>
+        {
+            (int)IDENTIFIER.IMAGEFILE, (int)IDENTIFIER.IMAGEFILE1, (int)IDENTIFIER.IMAGEFILE2, (int)IDENTIFIER.IMAGEFILE3,
+            (int)IDENTIFIER.IMAGEFILE4, (int)IDENTIFIER.IMAGEFILE5, (int)IDENTIFIER.IMAGEFILE6, (int)IDENTIFIER.IMAGEFILE7,
+            (int)IDENTIFIER.IMAGECOUNT, (int)IDENTIFIER.IMAGELAYOUT, (int)IDENTIFIER.SIZINGMARGINS,
+        };
+
+        /// <summary>
+        /// Parts (class|part) where taking the source's strip geometry piecemeal would mix it with
+        /// the template's. Each image is its own picture, so one kept image doesn't hold the others
+        /// back. What has to stay together is the frame count/layout/margins and the pictures cut
+        /// by them: a part is locked when one of those scalars is a kept conflict, or when the
+        /// source changes a scalar while some image in the part stays the template's (a kept
+        /// conflict, or a high-dpi image the source never had). Locked parts keep all their
+        /// geometry from the template.
+        /// </summary>
+        private Dictionary<string, string> LockedGeometryParts(IEnumerable<string> keys)
+        {
+            var locked = new Dictionary<string, string>(StringComparer.Ordinal);
+            var keptImage = new Dictionary<string, string>(StringComparer.Ordinal);
+            var scalarChange = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var e in m_target.Entries.Where(e => e.ResourceType == "IMAGE" && !m_base.ByKey.ContainsKey(e.Key)))
+                keptImage[e.PartKey] = e.PropertyName + " (template only)";
+
+            foreach (var key in keys)
+            {
+                if (!m_base.ByKey.TryGetValue(key, out var b) || !m_source.ByKey.TryGetValue(key, out var s)) continue;
+                if (!GeometryIds.Contains(b.NameId) || Same(m_base, b, m_source, s)) continue;
+                if (!m_target.ByKey.TryGetValue(key, out var a) || Same(m_source, s, m_target, a)) continue;
+                if (KeyPattern.Matches(m_opt.PreferSource, b.ClassName, b.PartName, b.PropertyName)) continue;
+
+                bool conflict = !Same(m_base, b, m_target, a);
+                if (b.ResourceType == "IMAGE")
+                {
+                    if (conflict && FindImageAlias(a) == null) keptImage[b.PartKey] = b.PropertyName;
+                }
+                else if (conflict)
+                    locked[b.PartKey] = $"{b.PropertyName} in this part is a template adaptation, so the part's strip geometry stays with the template";
+                else
+                    scalarChange[b.PartKey] = b.PropertyName;
+            }
+
+            foreach (var kv in scalarChange)
+            {
+                if (!locked.ContainsKey(kv.Key) && keptImage.TryGetValue(kv.Key, out var img))
+                    locked[kv.Key] = $"source changes {kv.Value} but {img} here stays the template's, so the part's strip geometry stays with the template";
+            }
+            return locked;
+        }
+
+        private Dictionary<string, List<SemanticEntry>> m_baseImagesBySize;
+
+        /// <summary>
+        /// When the template shows a stock win7 picture that belongs to some other part (aero11's
+        /// TOPTABITEM uses the stock TABITEMLEFTEDGE strip), returns the source's entry for that
+        /// other part. Several stock parts can share a picture; the source has to agree on what it
+        /// became. If it doesn't, the candidates are narrowed to the same part/state/property as the
+        /// template property, then additionally to the same base class name (Desktop::ListView ->
+        /// ListView, Explorer::ListView...). Null when still ambiguous or not a stock picture.
+        /// </summary>
+        internal SemanticEntry FindImageAlias(SemanticEntry a)
+        {
+            if (a == null || a.ResourceType != "IMAGE") return null;
+            var ta = Decoded(m_target, "IMAGE", a.ResourceId);
+            if (ta == null) return null;
+
+            if (m_baseImagesBySize == null)
+            {
+                m_baseImagesBySize = new Dictionary<string, List<SemanticEntry>>();
+                foreach (var be in m_base.Entries.Where(e => e.ResourceType == "IMAGE"))
+                {
+                    var img = Decoded(m_base, "IMAGE", be.ResourceId);
+                    if (img == null) continue;
+                    string k = img.Width + "x" + img.Height;
+                    if (!m_baseImagesBySize.TryGetValue(k, out var l)) m_baseImagesBySize[k] = l = new List<SemanticEntry>();
+                    l.Add(be);
+                }
+            }
+            if (!m_baseImagesBySize.TryGetValue(ta.Width + "x" + ta.Height, out var sameSize)) return null;
+
+            var pairs = sameSize
+                .Where(be => !string.Equals(be.ClassName, DwmClass, StringComparison.OrdinalIgnoreCase))
+                .Where(be => NearlyEqual(Decoded(m_base, "IMAGE", be.ResourceId), ta, m_opt.ImageTolerance))
+                .Select(be => Tuple.Create(be, m_source.ByKey.TryGetValue(be.Key, out var se) ? se : null))
+                .Where(p => p.Item2 != null && p.Item2.ResourceType == "IMAGE")
+                .ToList();
+
+            string BaseClass(string c) { int i = c.LastIndexOf("::", StringComparison.Ordinal); return i < 0 ? c : c.Substring(i + 2); }
+            // the class the template says this one inherits from (BCMAP), e.g. DarkMode_Explorer::ListView -> Explorer::ListView.
+            string parent = m_target.ClassesByName.TryGetValue(a.ClassName, out var tc) && tc.BaseClassId >= 0
+                && m_target.Style.Classes.TryGetValue(tc.BaseClassId, out var pc) ? pc.ClassName : null;
+            var narrowings = new List<Func<Tuple<SemanticEntry, SemanticEntry>, bool>>
+            {
+                p => true,
+                p => p.Item1.PartName == a.PartName && p.Item1.StateId == a.StateId && p.Item1.PropertyName == a.PropertyName,
+                p => p.Item1.PartName == a.PartName && p.Item1.StateId == a.StateId && p.Item1.PropertyName == a.PropertyName
+                     && string.Equals(BaseClass(p.Item1.ClassName), BaseClass(a.ClassName), StringComparison.OrdinalIgnoreCase),
+                p => p.Item1.PartName == a.PartName && p.Item1.StateId == a.StateId && p.Item1.PropertyName == a.PropertyName
+                     && parent != null && string.Equals(p.Item1.ClassName, parent, StringComparison.OrdinalIgnoreCase),
+            };
+            foreach (var keep in narrowings)
+            {
+                var sources = pairs.Where(keep).Select(p => p.Item2).ToList();
+                if (sources.Count == 0) return null;
+                if (sources.All(x => Same(m_source, x, m_source, sources[0]))) return sources[0];
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Shared merge rule. Returns true when the target property was rewritten from the source.
+        /// </summary>
+        internal bool ThreeWay(string cls, string part, int state, string prop,
+            SemanticEntry b, SemanticEntry s, SemanticEntry a, SemanticModel src, bool partNameKnown)
+        {
+            var r = m_report;
+            if (s == null && b != null)
+            {
+                if (a != null) Decide(b, "kept-target", "source removed this property; removals aren't imported", b, null, a, null);
+                r.Count("source-removed");
+                return false;
+            }
+            if (s != null && b == null)
+            {
+                r.Count("source-added");
+                if (a != null)
+                {
+                    Decide(s, Same(src, s, m_target, a) ? "already-equal" : "kept-target",
+                        "source and template both added this property; template kept", null, s, a, null);
+                    return false;
+                }
+                if (KeyPattern.Matches(m_opt.Exclude, cls, part, prop))
+                {
+                    Decide(s, "excluded", "matched an exclude rule", null, s, null, null);
+                    return false;
+                }
+                if (TryAddRecord(s, src, out string why))
+                {
+                    Decide(s, "added", "source sets this where stock win7 has nothing; added the record to the template", null, s, null, null);
+                    r.Count("added");
+                    return true;
+                }
+                Decide(s, "skipped-source-added", why, null, s, null, null);
+                r.Count("skipped-source-added");
+                return false;
+            }
+            if (Same(m_base, b, src, s))
+            {
+                r.Count("unchanged");
+                return false;
+            }
+            r.Count("source-changed");
+
+            if (KeyPattern.Matches(m_opt.Exclude, cls, part, prop))
+            {
+                Decide(s, "excluded", "matched an exclude rule", b, s, a, null);
+                return false;
+            }
+            if (a == null)
+            {
+                string why = m_target.ClassesByName.ContainsKey(cls)
+                    ? "template has no such property here (removed or renamed for win10)"
+                    : "class doesn't exist in the template";
+                Decide(s, "skipped-target-missing", why, b, s, null, null);
+                r.Count("skipped-target-missing");
+                return false;
+            }
+            if (m_touched.Contains(a.Property))
+            {
+                return false;
+            }
+            if (Same(src, s, m_target, a))
+            {
+                Decide(s, "already-equal", "template already has the source value", b, s, a, null);
+                r.Count("already-equal");
+                return false;
+            }
+
+            bool targetStock = Same(m_base, b, m_target, a);
+            bool forced = false;
+            string aliasNote = null;
+            var applyFrom = s;
+            if (!targetStock)
+            {
+                if (!KeyPattern.Matches(m_opt.PreferSource, cls, part, prop))
+                {
+                    var alias = ReferenceEquals(src, m_source) ? FindImageAlias(a) : null;
+                    if (alias == null)
+                    {
+                        Decide(s, "kept-target", "template changed this away from stock win7 (intentional win10 adaptation)", b, s, a, null);
+                        r.Count("kept-target-conflict");
+                        return false;
+                    }
+                    if (Same(src, alias, m_target, a))
+                    {
+                        Decide(s, "kept-target", $"template uses the stock {alias.PartName} {alias.PropertyName} picture here, and the source left that one alone", b, s, a, null);
+                        r.Count("kept-target-alias-unchanged");
+                        return false;
+                    }
+                    // follow the template's choice of stock sprite, with the source's version of it.
+                    aliasNote = $"template uses the stock {alias.ClassName}|{alias.PartName}|{alias.PropertyName} picture here; took the source's version of that one";
+                    applyFrom = alias;
+                }
+                else forced = true;
+            }
+
+            string err;
+            if (!ApplySourceValue(src, applyFrom, a.Property, out err))
+            {
+                Decide(s, "failed", err, b, s, a, null);
+                r.Count("failed");
+                r.Warnings.Add($"{cls}|{part}|S{state}|{prop}: not applied, {err}");
+                return false;
+            }
+            m_touched.Add(a.Property);
+            RecordImageReplacement(a);
+            ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
+            string after = SemanticModel.FormatValue(a.Property);
+            string note = partNameKnown ? null : "part matched by numeric id (no part name table)";
+            string action = forced ? "applied-override" : aliasNote != null ? "applied-alias" : "applied";
+            Decide(a, action,
+                forced ? "prefer-source rule overrode a template adaptation" : aliasNote ?? note ?? "template had the stock value",
+                b, applyFrom, a, after);
+            r.Count(action);
+            if (!partNameKnown) r.Count("applied-numeric-part");
+            return true;
+        }
+
+        /// <summary>"classId/partId/stateId/nameId/typeId" of records the import created.</summary>
+        internal List<string> AddedRecords { get; } = new List<string>();
+
+        /// <summary>
+        /// Adds a record the source has and stock win7 doesn't (text glow on the address bar, a
+        /// font on the tree view...) to the template, in the same class, part (matched by name, or
+        /// by number where there's no part table) and state. The class has to exist in the template;
+        /// a missing part or state section is created, the serializer keeps sections contiguous.
+        /// The value goes through ApplySourceValue, so images are copied, string and font ids are
+        /// translated and records whose meaning changed between win7 and win10 are refused.
+        /// </summary>
+        private bool TryAddRecord(SemanticEntry s, SemanticModel src, out string why)
+        {
+            why = null;
+            if (!m_target.ClassesByName.TryGetValue(s.ClassName, out var cls) || m_target.DuplicateClassNames.Contains(s.ClassName))
+            {
+                why = "class doesn't exist in the template (or isn't unique)";
+                return false;
+            }
+            int partId = s.PartId;
+            if (s.PartNameKnown)
+            {
+                var byName = SemanticModel.PartNames(cls.ClassName, m_target.Platform).Where(kv => kv.Value == s.PartName).Select(kv => kv.Key).ToList();
+                if (byName.Count != 1) { why = $"part {s.PartName} isn't known for {cls.ClassName} in the template"; return false; }
+                partId = byName[0];
+            }
+
+            cls.Parts.TryGetValue(partId, out var part);
+            StyleState state = null;
+            part?.States.TryGetValue(s.StateId, out state);
+            // a second source of the same addition (dwm alias parts share their win7 part) mustn't add it twice.
+            if (state != null && state.Properties.Any(p => p.Header.nameID == s.NameId && p.Header.typeID == s.TypeId))
+            {
+                why = "the template state already has this property";
+                return false;
+            }
+
+            var prop = new StyleProperty((PropertyHeader)s.Property.Header.Clone());
+            prop.Header.classID = cls.ClassId;
+            prop.Header.partID = partId;
+            prop.Header.stateID = s.StateId;
+            CopyValue(s.Property, prop);
+            if (!ApplySourceValue(src, s, prop, out why)) return false;
+
+            if (part == null)
+            {
+                part = new StylePart { PartId = partId, PartName = s.PartName };
+                cls.Parts.Add(partId, part);
+            }
+            if (state == null)
+            {
+                state = new StyleState { StateId = s.StateId, StateName = "State " + s.StateId };
+                part.States.Add(s.StateId, state);
+            }
+            state.Properties.Add(prop);
+            MarkTouched(prop, $"{s.ClassName}|{s.PartName}|S{s.StateId}|{s.PropertyName}");
+            AddedRecords.Add($"{cls.ClassId}/{partId}/{s.StateId}/{prop.Header.nameID}/{prop.Header.typeID}");
+            return true;
+        }
+
+        internal void Decide(SemanticEntry e, string action, string reason, SemanticEntry b, SemanticEntry s, SemanticEntry a, string result)
+        {
+            m_report.Decisions.Add(new MergeDecision
+            {
+                Class = e.ClassName,
+                Part = e.PartName,
+                State = e.StateId,
+                Property = e.PropertyName,
+                Action = action,
+                Reason = reason,
+                Base = b?.RawValue,
+                Source = s?.RawValue,
+                Target = a?.RawValue,
+                Result = result
+            });
+        }
+
+        internal bool Same(SemanticModel m1, SemanticEntry e1, SemanticModel m2, SemanticEntry e2)
+        {
+            if (e1 == null || e2 == null) return e1 == e2;
+            if (e1.Value == e2.Value) return true;
+            if (e1.IsStringRef && e2.IsStringRef)
+            {
+                // without a string table on one side all that's left is the id.
+                if (e1.Value.StartsWith("strid:") || e2.Value.StartsWith("strid:"))
+                    return e1.Property.Header.shortFlag == e2.Property.Header.shortFlag;
+                if (e1.TypeId == (int)IDENTIFIER.FONT && e2.TypeId == (int)IDENTIFIER.FONT)
+                {
+                    // compare what uxtheme turns them into, not the spelling ("Cleartype" vs "ClearType").
+                    var f1 = FontSpec.Parse(e1.Value.Substring(4));
+                    var f2 = FontSpec.Parse(e2.Value.Substring(4));
+                    if (f1.Error == null && f2.Error == null) return f1.Equals(f2);
+                }
+                return string.Equals(e1.Value, e2.Value, StringComparison.OrdinalIgnoreCase);
+            }
+            if (e1.ResourceType != null && e1.ResourceType == e2.ResourceType && m_opt.ImageTolerance > 0)
+            {
+                var i1 = Decoded(m1, e1.ResourceType, e1.ResourceId);
+                var i2 = Decoded(m2, e2.ResourceType, e2.ResourceId);
+                return i1 != null && i2 != null && NearlyEqual(i1, i2, m_opt.ImageTolerance);
+            }
+            return false;
+        }
+
+        internal ArgbImage Decoded(SemanticModel m, string type, int id)
+        {
+            string k = (ReferenceEquals(m, m_base) ? "b" : ReferenceEquals(m, m_source) ? "s" : "t") + "/" + type + "/" + id;
+            if (m_decoded.TryGetValue(k, out var img)) return img;
+            var info = m.GetImageInfo(type, id);
+            img = info != null && info.Decodable ? ImageIdentity.Decode(m.GetResourceBytes(type, id)) : null;
+            m_decoded[k] = img;
+            return img;
+        }
+
+        /// <summary>
+        /// Same size and every premultiplied channel within <paramref name="tol"/>. Comparing
+        /// premultiplied values stops nearly transparent pixels from counting as big changes.
+        /// </summary>
+        public static bool NearlyEqual(ArgbImage x, ArgbImage y, int tol)
+        {
+            if (x.Width != y.Width || x.Height != y.Height) return false;
+            for (int i = 0; i < x.Pixels.Length; ++i)
+            {
+                uint p = x.Pixels[i], q = y.Pixels[i];
+                if (p == q) continue;
+                int pa = (int)(p >> 24), qa = (int)(q >> 24);
+                if (Math.Abs(pa - qa) > tol) return false;
+                for (int sh = 0; sh < 24; sh += 8)
+                {
+                    int pc = (int)((p >> sh) & 0xFF) * pa / 255;
+                    int qc = (int)((q >> sh) & 0xFF) * qa / 255;
+                    if (Math.Abs(pc - qc) > tol) return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>Writes the source value into the template property, translating resource and string ids.</summary>
+        internal bool ApplySourceValue(SemanticModel src, SemanticEntry s, StyleProperty target, out string error)
+        {
+            error = null;
+            var sp = s.Property;
+            if (sp.Header.typeID != target.Header.typeID)
+            {
+                error = $"type mismatch ({sp.Header.typeID} vs {target.Header.typeID})";
+                return false;
+            }
+
+            // same record, different handler: IMAGEFILE6/7 are string ids for win7 uxtheme and images
+            // for win10 (6.1.7600 vs 19041 GetThemePrimitiveID tables). copying across would point a
+            // string id at an image slot or the other way round.
+            var targetRes = SemanticModel.ResourceRef(target, Platform.Win10);
+            bool targetString = SemanticModel.IsStringRef(target, Platform.Win10);
+            if ((s.ResourceType != null) != (targetRes != null) || s.IsStringRef != targetString)
+            {
+                error = $"{SemanticModel.PropertyName(sp.Header.nameID)} means something else on win10 than on win7 (image vs string id)";
+                return false;
+            }
+            if (s.ResourceType != null)
+            {
+                var data = src.GetResourceBytes(s.ResourceType, s.ResourceId);
+                if (data == null)
+                {
+                    error = $"source {s.ResourceType} {s.ResourceId} is missing";
+                    return false;
+                }
+                var info = src.GetImageInfo(s.ResourceType, s.ResourceId);
+                if (SemanticModel.MustBePng(sp) && (info == null || !info.Decodable))
+                {
+                    error = $"source {s.ResourceType} {s.ResourceId} isn't a decodable png ({info?.Error})";
+                    return false;
+                }
+                int id = PlaceResource(s.ResourceType, s.ResourceId, data, info != null && info.Decodable ? info : null);
+                if (sp.Header.typeID == (int)IDENTIFIER.STREAM)
+                    target.Header.shortFlag = id; // StyleProperty.SetValue(int) only maps the id for FILENAME-like types
+                else
+                    target.SetValue(id);
+                return true;
+            }
+
+            if (s.IsStringRef)
+            {
+                if (sp.Header.nameID == (int)IDENTIFIER.ATLASINPUTIMAGE && sp.Header.typeID == (int)IDENTIFIER.STRING)
+                {
+                    // 19041 requires a 16-byte decoded value for an external 8001 string (table 0x171B83924), 7600 didn't.
+                    error = "external ATLASINPUTIMAGE string: win10 uxtheme checks its decoded size, win7 didn't; not copied";
+                    return false;
+                }
+                string text = src.ResolveString(sp.Header.shortFlag);
+                if (text == null)
+                {
+                    error = $"source string {sp.Header.shortFlag} not found";
+                    return false;
+                }
+                int id;
+                if (sp.Header.typeID == (int)IDENTIFIER.FONT)
+                {
+                    if (!PlaceFont(text, out id, out error)) return false;
+                }
+                else
+                {
+                    id = m_target.FindStringId(text, out bool exact);
+                    if (id < 0)
+                    {
+                        error = $"template has no string \"{text}\"";
+                        return false;
+                    }
+                    string note = $"string \"{text}\" matched template string {id} ignoring case.";
+                    if (!exact && !m_report.Notes.Contains(note)) m_report.Notes.Add(note);
+                }
+                if (sp.Header.typeID == (int)IDENTIFIER.STRING)
+                    target.Header.shortFlag = id; // SetValue(int) only maps the id for FILENAME/FONT-like types
+                else
+                    target.SetValue(id);
+                return true;
+            }
+
+            CopyValue(sp, target);
+            return true;
+        }
+
+        /// <summary>true once a font string was added to the template's string tables.</summary>
+        internal bool StringsAdded { get; private set; }
+        private readonly Dictionary<string, int> m_addedFonts = new Dictionary<string, int>(StringComparer.Ordinal);
+        /// <summary>DWMWindow parts whose geometry fails the check but is exactly what the source (or template) ships.</summary>
+        internal HashSet<string> GeometryWaivers { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Finds the template string id holding the same font (parsed, not spelled the same) or
+        /// adds the source's font string to every string table of the template. Refuses strings
+        /// uxtheme would reject (it fails the whole theme load on an unknown style word) and fonts
+        /// without a face or a positive size, which would wreck the system metrics fonts.
+        /// </summary>
+        private bool PlaceFont(string text, out int id, out string error)
+        {
+            id = -1;
+            error = null;
+            var font = FontSpec.Parse(text);
+            if (font.Error != null) { error = $"font \"{text}\": {font.Error}"; return false; }
+            if (!font.IsSane) { error = $"font \"{text}\" isn't usable ({string.Join("; ", font.Warnings)})"; return false; }
+            if (text.Length > FontSpec.MaxStringLength) { error = $"font \"{text}\" is longer than uxtheme reads"; return false; }
+
+            var tables = m_target.Style.StringTables;
+            foreach (var kv in tables.SelectMany(t => t.Value).OrderBy(kv => kv.Key))
+            {
+                if (font.Equals(FontSpec.Parse(kv.Value))) { id = kv.Key; return true; }
+            }
+            if (m_addedFonts.TryGetValue(font.ToString(), out id)) return true;
+
+            if (tables.Count == 0 || tables.All(t => t.Value.Count == 0))
+            {
+                error = $"template has no string table to add font \"{text}\" to";
+                return false;
+            }
+            // a fresh id above everything in every language, so no existing string moves.
+            id = tables.SelectMany(t => t.Value.Keys).Max() + 1;
+            string canonical = font.ToString();
+            foreach (var t in tables.Values) t[id] = canonical;
+            m_addedFonts[canonical] = id;
+            StringsAdded = true;
+            m_report.Notes.Add($"added font string {id} \"{canonical}\" to the template's string tables (no template string had that font).");
+            m_report.Count("font-strings-added");
+            return true;
+        }
+
+        internal int PlaceResource(string type, int sourceId, byte[] data, ImageInfo info)
+        {
+            int id = m_alloc.Place(type, data, out bool reused);
+            if (!m_report.Resources.Any(x => x.Type == type && x.SourceId == sourceId))
+            {
+                m_report.Resources.Add(new ResourceMapping
+                {
+                    Type = type,
+                    SourceId = sourceId,
+                    TargetId = id,
+                    Reused = reused,
+                    Bytes = data.Length,
+                    Sha1 = ResourceInventory.Sha1Hex(data),
+                    Dimensions = info == null ? null : $"{info.Width}x{info.Height}{(info.HasAlpha ? " alpha" : "")}"
+                });
+            }
+            return id;
+        }
+
+        internal static void CopyValue(StyleProperty from, StyleProperty to)
+        {
+            object v = from.GetValue();
+            // the typed SetValue overloads keep sizeInBytes in sync for variable sized payloads.
+            switch (v)
+            {
+                case string str: to.SetValue(str); break;
+                case List<int> il: to.SetValue(new List<int>(il)); break;
+                case List<Color> cl: to.SetValue(new List<Color>(cl)); break;
+                case Margins m: to.SetValue(new Margins(m.Left, m.Top, m.Right, m.Bottom)); break;
+                case byte[] raw:
+                    to.SetValue((byte[])raw.Clone());
+                    to.Header.sizeInBytes = from.Header.sizeInBytes;
+                    break;
+                default: to.SetValue(v); break;
+            }
+            to.Header.shortFlag = from.Header.shortFlag;
+        }
+
+        // ---- accessors for the DWM pass ----------------------------------------------------
+        internal SemanticModel Base => m_base;
+        internal SemanticModel Source => m_source;
+        internal SemanticModel Target => m_target;
+        internal ImportReport Report => m_report;
+        internal Win7ImportOptions Options => m_opt;
+        internal ResourceIdAllocator Allocator => m_alloc;
+        internal void MarkTouched(StyleProperty p, string label)
+        {
+            m_touched.Add(p);
+            ChangedProperties[p] = label;
+        }
+
+        internal void Untouch(IEnumerable<StyleProperty> props)
+        {
+            foreach (var p in props)
+            {
+                m_touched.Remove(p);
+                ChangedProperties.Remove(p);
+            }
+        }
+    }
+
+    /// <summary>pixels the validator must find at <see cref="OutputRect"/> in the output DWM atlas.</summary>
+    internal class SpriteExpectation
+    {
+        public string Part { get; set; }
+        public Rectangle OutputRect { get; set; }
+        public ArgbImage Expected { get; set; }
+    }
+}

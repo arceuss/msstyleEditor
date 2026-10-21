@@ -165,6 +165,9 @@
     <Compile Include="Dialogs\SearchDialog.Designer.cs">
       <DependentUpon>SearchDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="Dialogs\Win7ImportDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="ImageFormats.cs" />
     <Compile Include="IThemeManager2.cs" />
     <Compile Include="PartRenderer.cs" />

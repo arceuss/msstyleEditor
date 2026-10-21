@@ -71,6 +71,20 @@ namespace libmsstyle
         [DllImport("kernel32.dll", EntryPoint = "EnumResourceNamesExW", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern bool EnumResourceNamesEx(IntPtr hModule, uint lpType, [MarshalAs(UnmanagedType.FunctionPtr)] EnumResNameDelegate lpEnumFunc, IntPtr lParam, EnumResourceFlags dwFlags, ushort langId);
 
+        public delegate bool EnumResTypeDelegate(IntPtr hModule, IntPtr lpType, IntPtr lParam);
+
+        [DllImport("kernel32.dll", EntryPoint = "EnumResourceTypesExW", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool EnumResourceTypesEx(IntPtr hModule, [MarshalAs(UnmanagedType.FunctionPtr)] EnumResTypeDelegate lpEnumFunc, IntPtr lParam, EnumResourceFlags dwFlags, ushort langId);
+
+        [DllImport("kernel32.dll", EntryPoint = "EnumResourceNamesExW", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool EnumResourceNamesEx(IntPtr hModule, IntPtr lpType, [MarshalAs(UnmanagedType.FunctionPtr)] EnumResNameDelegate lpEnumFunc, IntPtr lParam, EnumResourceFlags dwFlags, ushort langId);
+
+        [DllImport("kernel32.dll", EntryPoint = "EnumResourceLanguagesExW", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool EnumResourceLanguagesEx(IntPtr hModule, IntPtr lpType, IntPtr lpName, [MarshalAs(UnmanagedType.FunctionPtr)] EnumResLangDelegate lpEnumFunc, IntPtr lParam, EnumResourceFlags dwFlags, ushort langId);
+
+        [DllImport("kernel32.dll", EntryPoint = "FindResourceExW", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern IntPtr FindResourceEx(IntPtr hModule, IntPtr lpType, IntPtr lpName, ushort wLanguage);
+
 
         [System.Flags]
         public enum LoadLibraryFlags : uint

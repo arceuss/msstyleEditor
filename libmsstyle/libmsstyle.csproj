@@ -67,7 +67,24 @@
     <Compile Include="CMap.cs" />
     <Compile Include="CubicBezierTimingFunction.cs" />
     <Compile Include="ImageConverter.cs" />
+    <Compile Include="Import\DwmImport.cs" />
+    <Compile Include="Import\FontSpec.cs" />
+    <Compile Include="Import\ImageIdentity.cs" />
+    <Compile Include="Import\ImportModel.cs" />
+    <Compile Include="Import\ImportReportWriter.cs" />
+    <Compile Include="Import\JsonWriter.cs" />
+    <Compile Include="Import\ResourceIdAllocator.cs" />
+    <Compile Include="Import\ResourceInventory.cs" />
+    <Compile Include="Import\SemanticModel.cs" />
+    <Compile Include="Import\StyleCompanions.cs" />
+    <Compile Include="Import\StyleValidator.cs" />
+    <Compile Include="Import\Win7StyleImporter.cs" />
+    <Compile Include="Import\Win7StockAero.cs" />
     <Compile Include="Margins.cs" />
+    <!-- stock win7 aero, the common ancestor the importer diffs custom win7 styles against. -->
+    <EmbeddedResource Include="..\libmsstyleTests\styles\w7_aero.msstyles">
+      <LogicalName>libmsstyle.Import.w7_aero.msstyles</LogicalName>
+    </EmbeddedResource>
     <Compile Include="Platform.cs" />
     <Compile Include="PropertyStream.cs" />
     <Compile Include="ResourceAccess.cs" />

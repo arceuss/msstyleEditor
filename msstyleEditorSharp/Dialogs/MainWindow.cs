@@ -1140,6 +1140,81 @@ namespace msstyleEditor
             }
         }
 
+        private async void OnImportWin7Style(object sender, EventArgs e)
+        {
+            if (m_style == null || (m_style.Platform != Platform.Win10 && m_style.Platform != Platform.Win11))
+            {
+                MessageBox.Show(this, "Open the Windows 10 style to import into first (e.g. an Aero 7 port that already works on your system).",
+                    "Import Windows 7 style", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string source;
+            using (var ofd = new OpenFileDialog { Title = "Windows 7 style to import", Filter = "Visual Style (*.msstyles)|*.msstyles" })
+            {
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+                source = ofd.FileName;
+            }
+
+            // the open style may have unsaved edits, so the template is a snapshot of it, not its file.
+            string work = Path.Combine(Path.GetTempPath(), "msstyleEditor-import", DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+            string name = Path.GetFileNameWithoutExtension(m_style.Path);
+            string snapshot = Path.Combine(work, "template", name + ".msstyles");
+            string candidate = Path.Combine(work, "out", name + "-win7import.msstyles");
+            // base stays empty: the importer uses the stock win7 aero compiled into libmsstyle.
+            var opt = new libmsstyle.Import.Win7ImportOptions
+            {
+                SourcePath = source,
+                TemplatePath = snapshot,
+                OutputPath = candidate,
+                // the snapshot sits alone in temp; Shell and the .mui come from the file that's open.
+                CompanionSourcePath = m_style.Path,
+                DryRun = false,
+            };
+
+            libmsstyle.Import.ImportReport report;
+            List<string> reportFiles;
+            Cursor = Cursors.WaitCursor;
+            btImportWin7.Enabled = false;
+            UpdateStatusText("Importing " + Path.GetFileName(source) + "...");
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(snapshot));
+                m_style.Save(snapshot, true);
+                report = await System.Threading.Tasks.Task.Run(() => libmsstyle.Import.Win7StyleImporter.Run(opt));
+                reportFiles = libmsstyle.Import.ImportReportWriter.Write(report, Path.Combine(work, "out", "import-report"));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Import failed!", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatusText("Import failed.");
+                return;
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+                btImportWin7.Enabled = true;
+            }
+
+            bool ok = report.Status == libmsstyle.Import.ImportStatus.ReadyForVmTest;
+
+            using (var dlg = new Win7ImportDialog(report, reportFiles[1]))
+            {
+                dlg.ShowDialog(this);
+            }
+
+            if (ok)
+            {
+                CloseStyle();
+                OpenStyle(candidate);
+                UpdateStatusText("Imported " + Path.GetFileName(source) + ". Not saved yet: test it, keep editing, then save to a new file.");
+            }
+            else
+            {
+                UpdateStatusText("Import blocked, the open style is unchanged. See the report.");
+            }
+        }
+
         private void OnControlPreview(object sender, EventArgs e)
         {
             var dlg = new ControlDemoDialog();

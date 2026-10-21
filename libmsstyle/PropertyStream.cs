@@ -11,7 +11,7 @@ namespace libmsstyle
 {
     class PropertyStreamUnknownBytesException : Exception
     {
-
+        public PropertyStreamUnknownBytesException(string message) : base(message) { }
     }
 
     class PropertyStream
@@ -19,17 +19,26 @@ namespace libmsstyle
         public static StyleProperty ReadNextProperty(byte[] data, ref int start)
         {
             int cursor = start;
-            PropertyHeader header = new PropertyHeader(data, cursor);
-            while(!header.IsValid())
+            // records are 8-byte aligned but string/list payloads aren't padded in the
+            // length field, so step over padding until something looks like a header.
+            while (cursor + 32 <= data.Length && !new PropertyHeader(data, cursor).IsValid())
             {
                 cursor++;
-                header = new PropertyHeader(data, cursor);
             }
 
-            if(cursor - start > 4)
+            if (cursor + 32 > data.Length)
             {
+                int skipped = data.Length - start;
+                start = data.Length;
+                throw new PropertyStreamUnknownBytesException($"no valid property header in the last {skipped} bytes");
+            }
+
+            PropertyHeader header = new PropertyHeader(data, cursor);
+            if (cursor - start > 4)
+            {
+                int skippedAt = start;
                 start = cursor;
-                throw new PropertyStreamUnknownBytesException();
+                throw new PropertyStreamUnknownBytesException($"skipped {cursor - skippedAt} unknown bytes at offset {skippedAt}");
             }
 
             cursor += 32; // sizeof PropertyHeader
@@ -198,14 +207,28 @@ namespace libmsstyle
                             int sizeOfPayload = header.sizeInBytes;
                             if (sizeOfPayload > 0)
                             {
+                                if (sizeOfPayload > data.Length - cursor)
+                                {
+                                    throw new InvalidDataException($"opaque property (type {header.typeID}) at offset {cursor - 32} claims {sizeOfPayload} bytes, only {data.Length - cursor} left");
+                                }
                                 byte[] mem = new byte[sizeOfPayload];
-                                Array.Copy(data, cursor, mem, 0, data.Length - cursor);
+                                Array.Copy(data, cursor, mem, 0, sizeOfPayload);
                                 cursor += sizeOfPayload;
                                 prop.SetValue(mem);
                             }
                         }
                         break;
                     }
+            }
+
+            // uxtheme steps align8(32 + size). Only eat the gap when it's zero padding, so a
+            // file that packs records without padding still falls through to the header scan.
+            int aligned = (cursor + 7) & ~7;
+            if (aligned <= data.Length)
+            {
+                bool zeros = true;
+                for (int i = cursor; i < aligned; ++i) zeros &= data[i] == 0;
+                if (zeros) cursor = aligned;
             }
 
             start = cursor;

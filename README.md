@@ -48,5 +48,34 @@ On selection of a part, its properties are shown on the right side, grouped by t
 
 Saving the style is done via the menubar. It is recommended to save often, and to a new file, since there is no undo/redo functionality. Also remember to backup your original style and don't work in the "Themes" directory directly (probably no write permission anyways, but still).
 
+## Importing a Windows 7 style (experimental)
+
+Open a Windows 10 style that already works on your machine (e.g. an Aero 7 port), click Extras > Import Win7 Style and pick a custom Windows 7 `.msstyles`. The open style gets the custom style's look, and the result is opened in the editor unsaved, so you can test it, keep editing and save it like any other style.
+
+Stock Windows 7 `aero.msstyles` is built into the editor and used as the reference: only what the custom style changed relative to stock is carried over, and only where the open style still has the stock value. Everything else in the open style (class map, inheritance, animations, dark mode parts, every untouched resource) stays byte for byte. Images are compared by pixels, so a template that re-encoded the stock images still counts as stock.
+
+DWMWindow (frames, caption buttons, glyphs) is matched by part name, not by part number, because the numbering changed after Windows 7. This only works if the template uses the stock Windows 7 DWM atlas; otherwise the template frames are kept and the report says so. Windows 10 parts without a Windows 7 counterpart (dark glyphs, extra caption backgrounds) follow the stock sprite they pointed at. Sprites that can't be traced keep the template's pixels.
+
+If offline validation fails, nothing changes and the report says why. Every run writes a `.md` and `.json` report plus a `.threeway.json` with the full stock / custom / template comparison ("Open report folder" in the result window). The template's `Shell` folder and `<lang>\*.msstyles.mui` files are copied next to the result (renamed to match), since Windows can't load the shellstyle without them.
+
+The same thing runs headless:
+
+```
+msstyleImport import --source custom.msstyles --template win10.msstyles --report out\report [--write --out out\candidate.msstyles]
+```
+
+`--prefer-source Class|Part|Property` takes the custom value where the template deliberately changed it, `--exclude` skips matches (`*` wildcards).
+
+The CLI does a dry run (reports only) unless `--write` is given; `--base` swaps in a different stock reference.
+
+Limitations:
+
+* Offline validation is not a render test. Try the result in a disposable VM with a snapshot before using it for real.
+* Win7-only parts (Flip3D, reflection, side highlight) have no Windows 10 counterpart and are dropped.
+* Win10 templates add 192-384 dpi images that a Windows 7 style never had; at high DPI those parts still show the template image. The report lists them.
+* Classes that don't exist in the template are reported, not added. Properties the custom style adds on top of stock Windows 7 (text glow, fonts, colors...) are added to the template's matching class.
+* Fonts are compared by what they parse to, not their spelling. A font the template doesn't have is added to its string tables, which means the result is saved with the strings inside the `.msstyles`. A font string Windows would reject (an unknown style word fails the whole theme) is never written, and a caption/menu font taller than its bar blocks the result.
+* Pictures the template reuses from stock Windows 7 elsewhere (dark mode classes, extra DPI sizes, shared image ids) get the custom style's version too, unless the custom style gave the parts that shared that picture different looks.
+
 ## Contributors
 * [Shomnipotence](https://github.com/Shomnipotence) - New application icon design
