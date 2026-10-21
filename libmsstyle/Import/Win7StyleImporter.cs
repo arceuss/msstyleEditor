@@ -116,7 +116,7 @@ namespace libmsstyle.Import
                 }
 
                 r.Validation = new StyleValidator(m_opt.TemplatePath, candidate, m_alloc.Added, SpriteChecks, ChangedProperties.Values.ToList(),
-                    StringsAdded, GeometryWaivers, AddedRecords, FrameWaivers).Validate();
+                    StringsAdded, GeometryWaivers, AddedRecords, FrameWaivers, RemovedRecords).Validate();
                 foreach (var e in r.Validation.Errors) r.Errors.Add("validation: " + e);
                 foreach (var w in r.Validation.Warnings) r.Warnings.Add("validation: " + w);
                 return Finish(candidate);
@@ -323,6 +323,7 @@ namespace libmsstyle.Import
             var keys = new HashSet<string>(m_source.ByKey.Keys);
             keys.UnionWith(m_base.ByKey.Keys);
             var locked = LockedGeometryParts(keys);
+            m_sourceGeometryParts = new HashSet<string>(m_scalarChanges.Where(p => !locked.ContainsKey(p)), StringComparer.Ordinal);
 
             foreach (var key in keys.OrderBy(k => k, StringComparer.Ordinal))
             {
@@ -348,6 +349,88 @@ namespace libmsstyle.Import
             }
 
             PropagateImages(locked);
+            FillDpiSlots(locked);
+            RemoveTemplateColorOverrides();
+            MirrorIntoWin10Classes();
+        }
+
+        // these role mappings are inferred from the styles and host screenshots, not shell code.
+        // SIZEBOXBKGND's consumer is verified: comctl32 19041.7663 DrawSizeBoxEx reads 11/0/FILLCOLOR.
+        // its mapping to win7's BTNFACE is inferred; both stock values are 240,240,240.
+        private static readonly (string Class, int Part, int State, IDENTIFIER Prop, string FromClass, int FromPart, int FromState, IDENTIFIER FromProp)[] Win10Mirrors =
+        {
+            ("ExplorerNavPane", 0, 0, IDENTIFIER.FILLCOLOR, "Explorer::TreeView", 0, 0, IDENTIFIER.FILLCOLOR),
+            ("ExplorerNavPane", 0, 0, IDENTIFIER.TEXTCOLOR, "Explorer::TreeView", 1, 1, IDENTIFIER.TEXTCOLOR),
+            // win10's list-item overrides hide ItemsView's common text color on normal/hot/selected tiles.
+            ("ItemsView::ListView", 1, 1, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
+            ("ItemsView::ListView", 1, 2, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
+            ("ItemsView::ListView", 1, 3, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
+            ("ScrollBar", 11, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.BTNFACE),
+        };
+
+        private void RemoveTemplateColorOverrides()
+        {
+            foreach (var a in m_target.Entries)
+            {
+                if (a.TypeId != (int)IDENTIFIER.COLOR || m_touched.Contains(a.Property)
+                    || m_base.ByKey.ContainsKey(a.Key) || m_source.ByKey.ContainsKey(a.Key)
+                    || a.ClassName.StartsWith("DarkMode", StringComparison.OrdinalIgnoreCase)
+                    || m_target.DuplicateClassNames.Contains(a.ClassName)
+                    || KeyPattern.Matches(m_opt.Exclude, a.ClassName, a.PartName, a.PropertyName)) continue;
+
+                // a new win10 subclass can hide all the source's states with one part-level color.
+                var tc = m_target.ClassesByName[a.ClassName];
+                var seen = new HashSet<int>();
+                while (!m_source.ClassesByName.ContainsKey(tc.ClassName) && seen.Add(tc.ClassId)
+                    && tc.BaseClassId >= 0 && m_target.Style.Classes.TryGetValue(tc.BaseClassId, out var parent))
+                    tc = parent;
+                if (!m_source.ClassesByName.TryGetValue(tc.ClassName, out var sc)
+                    || !m_base.ClassesByName.TryGetValue(tc.ClassName, out var bc)) continue;
+                int part = a.PartId;
+                if (a.PartNameKnown)
+                {
+                    var parts = SemanticModel.PartNames(sc.ClassName, m_source.Platform).Where(p => p.Value == a.PartName).Select(p => p.Key).ToList();
+                    if (parts.Count != 1) continue;
+                    part = parts[0];
+                }
+                var sp = SemanticModel.FindEffective(m_source.Style, sc, part, a.StateId, (IDENTIFIER)a.NameId);
+                var bp = SemanticModel.FindEffective(m_base.Style, bc, part, a.StateId, (IDENTIFIER)a.NameId);
+                if (sp == null || sp.Header.typeID != (int)IDENTIFIER.COLOR
+                    || (bp != null && SemanticModel.FormatValue(sp) == SemanticModel.FormatValue(bp))) continue;
+
+                // only remove an override when the merged fallback already supplies the source color.
+                var state = m_target.Style.Classes[a.ClassId].Parts[a.PartId].States[a.StateId];
+                int index = state.Properties.IndexOf(a.Property);
+                state.Properties.RemoveAt(index);
+                var fallback = SemanticModel.FindEffective(m_target.Style, m_target.ClassesByName[a.ClassName], a.PartId, a.StateId, (IDENTIFIER)a.NameId);
+                bool followsSource = fallback != null && SemanticModel.FormatValue(fallback) == SemanticModel.FormatValue(sp);
+                state.Properties.Insert(index, a.Property);
+                if (!followsSource) continue;
+                RemoveRecord(a);
+                var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
+                Decide(a, "removed-color-override", "template-only color hid a changed source color; removed it so the merged source fallback supplies every state", null, s, a, SemanticModel.FormatValue(sp));
+                m_report.Count("removed-color-override");
+            }
+        }
+
+        private void MirrorIntoWin10Classes()
+        {
+            foreach (var m in Win10Mirrors)
+            {
+                if (m_target.DuplicateClassNames.Contains(m.Class) || KeyPattern.Matches(m_opt.Exclude, m.Class, "*", m.Prop.ToString())) continue;
+                var a = m_target.Entries.FirstOrDefault(e => e.ClassName == m.Class && e.PartId == m.Part && e.StateId == m.State && e.NameId == (int)m.Prop);
+                if (a == null || m_touched.Contains(a.Property)) continue;
+                if (!m_source.ClassesByName.TryGetValue(m.FromClass, out var sc) || !m_base.ClassesByName.TryGetValue(m.FromClass, out var bc)) continue;
+                var sp = SemanticModel.FindEffective(m_source.Style, sc, m.FromPart, m.FromState, m.FromProp);
+                var bp = SemanticModel.FindEffective(m_base.Style, bc, m.FromPart, m.FromState, m.FromProp);
+                if (sp == null) continue;
+                // only what the source changed from stock; untouched stock values leave the template alone.
+                if (bp != null && SemanticModel.FormatValue(sp) == SemanticModel.FormatValue(bp)) continue;
+                var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
+                if (Same(m_source, s, m_target, a)) continue;
+                ApplyExtra(a, s, null, "applied-mirror",
+                    $"inferred win10 role mapping from {s.ClassName}|{s.PartName}|S{s.StateId}|{s.PropertyName}");
+            }
         }
 
         // template IMAGE id -> ids it was replaced with by the merge.
@@ -430,21 +513,34 @@ namespace libmsstyle.Import
             (int)IDENTIFIER.IMAGECOUNT, (int)IDENTIFIER.IMAGELAYOUT, (int)IDENTIFIER.SIZINGMARGINS,
         };
 
+        // IMAGEFILE1..7: the same picture at different dpi, picked by IMAGESELECTTYPE.
+        private static readonly HashSet<int> DpiSlotIds = new HashSet<int>
+        {
+            (int)IDENTIFIER.IMAGEFILE1, (int)IDENTIFIER.IMAGEFILE2, (int)IDENTIFIER.IMAGEFILE3, (int)IDENTIFIER.IMAGEFILE4,
+            (int)IDENTIFIER.IMAGEFILE5, (int)IDENTIFIER.IMAGEFILE6, (int)IDENTIFIER.IMAGEFILE7,
+        };
+
+        // parts whose frame count/layout/margins the source changed and nothing locked: they take
+        // the source's whole strip geometry, extra dpi slots included.
+        private HashSet<string> m_scalarChanges = new HashSet<string>(StringComparer.Ordinal);
+        private HashSet<string> m_sourceGeometryParts = new HashSet<string>(StringComparer.Ordinal);
+
         /// <summary>
         /// Parts (class|part) where taking the source's strip geometry piecemeal would mix it with
         /// the template's. Each image is its own picture, so one kept image doesn't hold the others
         /// back. What has to stay together is the frame count/layout/margins and the pictures cut
         /// by them: a part is locked when one of those scalars is a kept conflict, or when the
         /// source changes a scalar while some image in the part stays the template's (a kept
-        /// conflict, or a high-dpi image the source never had). Locked parts keep all their
-        /// geometry from the template.
+        /// conflict, or a template-only image that isn't a dpi slot). Template-only dpi slots
+        /// (aero11's IMAGEFILE4-7) don't lock: <see cref="FillDpiSlots"/> gives them the source's
+        /// largest picture. Locked parts keep all their geometry from the template.
         /// </summary>
         private Dictionary<string, string> LockedGeometryParts(IEnumerable<string> keys)
         {
             var locked = new Dictionary<string, string>(StringComparer.Ordinal);
             var keptImage = new Dictionary<string, string>(StringComparer.Ordinal);
             var scalarChange = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var e in m_target.Entries.Where(e => e.ResourceType == "IMAGE" && !m_base.ByKey.ContainsKey(e.Key)))
+            foreach (var e in m_target.Entries.Where(e => e.ResourceType == "IMAGE" && !DpiSlotIds.Contains(e.NameId) && !m_base.ByKey.ContainsKey(e.Key)))
                 keptImage[e.PartKey] = e.PropertyName + " (template only)";
 
             foreach (var key in keys)
@@ -470,7 +566,42 @@ namespace libmsstyle.Import
                 if (!locked.ContainsKey(kv.Key) && keptImage.TryGetValue(kv.Key, out var img))
                     locked[kv.Key] = $"source changes {kv.Value} but {img} here stays the template's, so the part's strip geometry stays with the template";
             }
+            m_scalarChanges = new HashSet<string>(scalarChange.Keys, StringComparer.Ordinal);
             return locked;
+        }
+
+        /// <summary>
+        /// Template-only dpi slots (IMAGEFILE4-7 in aero11) in a state whose pictures came from the
+        /// source would show the template's art at high dpi, cut with the source's geometry. They
+        /// get the source's largest picture of that state instead, the same thing aero11 does for
+        /// GRIPPERVERT (IMAGEFILE4-6 = IMAGEFILE3).
+        /// </summary>
+        private void FillDpiSlots(Dictionary<string, string> locked)
+        {
+            var slots = m_target.Entries.Where(e =>
+                e.ResourceType == "IMAGE" && DpiSlotIds.Contains(e.NameId)
+                && !m_touched.Contains(e.Property)
+                && !m_base.ByKey.ContainsKey(e.Key)
+                && !string.Equals(e.ClassName, DwmClass, StringComparison.OrdinalIgnoreCase)
+                && !m_target.DuplicateClassNames.Contains(e.ClassName)
+                && !locked.ContainsKey(e.PartKey)
+                && !KeyPattern.Matches(m_opt.Exclude, e.ClassName, e.PartName, e.PropertyName)).ToList();
+            foreach (var e in slots)
+            {
+                // only states whose pictures the import replaced: untouched parts keep aero11's high dpi art.
+                bool replaced = m_target.Entries.Any(o => o.PartKey == e.PartKey && o.StateId == e.StateId
+                    && o.ResourceType == "IMAGE" && (o.NameId == (int)IDENTIFIER.IMAGEFILE || DpiSlotIds.Contains(o.NameId))
+                    && m_touched.Contains(o.Property));
+                if (!replaced) continue;
+                var from = m_source.Entries
+                    .Where(s => s.PartKey == e.PartKey && s.StateId == e.StateId && s.ResourceType == "IMAGE"
+                        && (DpiSlotIds.Contains(s.NameId) || s.NameId == (int)IDENTIFIER.IMAGEFILE))
+                    .OrderByDescending(s => DpiSlotIds.Contains(s.NameId) ? s.NameId : 0)
+                    .FirstOrDefault();
+                if (from == null || Same(m_source, from, m_target, e)) continue;
+                ApplyExtra(e, from, null, "applied-dpi-fill",
+                    $"template-only dpi slot in a state that now uses the source's pictures; took the source's largest ({from.PropertyName})");
+            }
         }
 
         private Dictionary<string, List<SemanticEntry>> m_baseImagesBySize;
@@ -533,7 +664,7 @@ namespace libmsstyle.Import
         }
 
         /// <summary>
-        /// Shared merge rule. Returns true when the target property was rewritten from the source.
+        /// Shared merge rule. Returns true when the target property was rewritten from the source (or deleted, for colors).
         /// </summary>
         internal bool ThreeWay(string cls, string part, int state, string prop,
             SemanticEntry b, SemanticEntry s, SemanticEntry a, SemanticModel src, bool partNameKnown)
@@ -541,8 +672,18 @@ namespace libmsstyle.Import
             var r = m_report;
             if (s == null && b != null)
             {
-                if (a != null) Decide(b, "kept-target", "source removed this property; removals aren't imported", b, null, a, null);
                 r.Count("source-removed");
+                if (a == null) return false;
+                // colors follow the source no matter what, including deleting them: pachenko drops
+                // TaskDialog's panel fills so dialogs fall back to its dark system colors.
+                if (a.TypeId == (int)IDENTIFIER.COLOR && !KeyPattern.Matches(m_opt.Exclude, cls, part, prop) && !m_touched.Contains(a.Property))
+                {
+                    RemoveRecord(a);
+                    Decide(b, "removed-color", "source deleted this color; colors always follow the source", b, null, a, null);
+                    r.Count("removed-color");
+                    return true;
+                }
+                Decide(b, "kept-target", "source removed this property; only color removals are imported", b, null, a, null);
                 return false;
             }
             if (s != null && b == null)
@@ -550,8 +691,35 @@ namespace libmsstyle.Import
                 r.Count("source-added");
                 if (a != null)
                 {
-                    Decide(s, Same(src, s, m_target, a) ? "already-equal" : "kept-target",
-                        "source and template both added this property; template kept", null, s, a, null);
+                    if (Same(src, s, m_target, a))
+                    {
+                        Decide(s, "already-equal", "source and template both added this property with the same value", null, s, a, null);
+                        return false;
+                    }
+                    // the template's own extra (high dpi caption buttons...) only fits the template's
+                    // geometry; where the part takes the source's geometry, the source's extra goes too.
+                    // colors follow the source no matter what.
+                    bool withGeometry = GeometryIds.Contains(s.NameId) && m_sourceGeometryParts.Contains(s.PartKey);
+                    bool isColor = a.TypeId == (int)IDENTIFIER.COLOR;
+                    if ((withGeometry || isColor) && !KeyPattern.Matches(m_opt.Exclude, cls, part, prop) && !m_touched.Contains(a.Property))
+                    {
+                        if (!ApplySourceValue(src, s, a.Property, out string addErr))
+                        {
+                            Decide(s, "failed", addErr, null, s, a, null);
+                            r.Count("failed");
+                            r.Warnings.Add($"{cls}|{part}|S{state}|{prop}: not applied, {addErr}");
+                            return false;
+                        }
+                        m_touched.Add(a.Property);
+                        RecordImageReplacement(a);
+                        ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
+                        string addAction = isColor ? "applied-color" : "applied-with-geometry";
+                        Decide(a, addAction, isColor ? "colors always follow the source" : "both added this; the part uses the source's strip geometry, so the source's version goes with it",
+                            null, s, a, SemanticModel.FormatValue(a.Property));
+                        r.Count(addAction);
+                        return true;
+                    }
+                    Decide(s, "kept-target", "source and template both added this property; template kept", null, s, a, null);
                     return false;
                 }
                 if (KeyPattern.Matches(m_opt.Exclude, cls, part, prop))
@@ -603,9 +771,11 @@ namespace libmsstyle.Import
 
             bool targetStock = Same(m_base, b, m_target, a);
             bool forced = false;
+            // colors always follow the source, even where the template adapted them.
+            bool color = !targetStock && a.TypeId == (int)IDENTIFIER.COLOR;
             string aliasNote = null;
             var applyFrom = s;
-            if (!targetStock)
+            if (!targetStock && !color)
             {
                 if (!KeyPattern.Matches(m_opt.PreferSource, cls, part, prop))
                 {
@@ -642,9 +812,10 @@ namespace libmsstyle.Import
             ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
             string after = SemanticModel.FormatValue(a.Property);
             string note = partNameKnown ? null : "part matched by numeric id (no part name table)";
-            string action = forced ? "applied-override" : aliasNote != null ? "applied-alias" : "applied";
+            string action = color ? "applied-color" : forced ? "applied-override" : aliasNote != null ? "applied-alias" : "applied";
             Decide(a, action,
-                forced ? "prefer-source rule overrode a template adaptation" : aliasNote ?? note ?? "template had the stock value",
+                color ? "colors always follow the source, the template's adaptation was replaced"
+                    : forced ? "prefer-source rule overrode a template adaptation" : aliasNote ?? note ?? "template had the stock value",
                 b, applyFrom, a, after);
             r.Count(action);
             if (!partNameKnown) r.Count("applied-numeric-part");
@@ -653,6 +824,17 @@ namespace libmsstyle.Import
 
         /// <summary>"classId/partId/stateId/nameId/typeId" of records the import created.</summary>
         internal List<string> AddedRecords { get; } = new List<string>();
+
+        /// <summary>same format, colors the source deleted or template-only color overrides removed.</summary>
+        internal List<string> RemovedRecords { get; } = new List<string>();
+
+        private void RemoveRecord(SemanticEntry a)
+        {
+            var state = m_target.Style.Classes[a.ClassId].Parts[a.PartId].States[a.StateId];
+            state.Properties.Remove(a.Property);
+            m_touched.Add(a.Property);
+            RemovedRecords.Add($"{a.ClassId}/{a.PartId}/{a.StateId}/{a.NameId}/{a.TypeId}");
+        }
 
         /// <summary>
         /// Adds a record the source has and stock win7 doesn't (text glow on the address bar, a
@@ -891,7 +1073,7 @@ namespace libmsstyle.Import
                 var info = m_source.GetImageInfo(e.ResourceType, e.ResourceId);
                 if (info == null || !info.Decodable) continue;
                 if (!StyleValidator.FramesFit(m_source, e, info, out int count, out _))
-                    FrameWaivers.Add(StyleValidator.FrameWaiverKey($"{e.ClassName}|{e.PartName}|S{e.StateId}|{e.PropertyName}", info.PixelSha1, count));
+                    FrameWaivers.Add(StyleValidator.FrameWaiverKey(e.PartKey, info.PixelSha1, count));
             }
         }
 

@@ -20,6 +20,7 @@ namespace libmsstyle.Import
         private readonly bool m_stringsAdded;
         private readonly HashSet<string> m_geometryWaivers;
         private readonly List<string> m_addedRecords;
+        private readonly List<string> m_removedRecords;
         private readonly HashSet<string> m_frameWaivers;
         private readonly ValidationReport m_rep = new ValidationReport();
 
@@ -29,7 +30,7 @@ namespace libmsstyle.Import
         /// <param name="frameWaivers"><see cref="FrameWaiverKey"/>s of source images that ship with a remainder after splitting into IMAGECOUNT frames.</param>
         internal StyleValidator(string template, string candidate, IReadOnlyDictionary<string, byte[]> added,
             List<SpriteExpectation> sprites, List<string> changedLabels, bool stringsAdded = false, IEnumerable<string> geometryWaivers = null,
-            IEnumerable<string> addedRecords = null, IEnumerable<string> frameWaivers = null)
+            IEnumerable<string> addedRecords = null, IEnumerable<string> frameWaivers = null, IEnumerable<string> removedRecords = null)
         {
             m_template = template;
             m_candidate = candidate;
@@ -39,6 +40,7 @@ namespace libmsstyle.Import
             m_stringsAdded = stringsAdded;
             m_geometryWaivers = new HashSet<string>(geometryWaivers ?? new string[0], StringComparer.OrdinalIgnoreCase);
             m_addedRecords = (addedRecords ?? new string[0]).ToList();
+            m_removedRecords = (removedRecords ?? new string[0]).ToList();
             m_frameWaivers = new HashSet<string>(frameWaivers ?? new string[0], StringComparer.Ordinal);
         }
 
@@ -170,10 +172,16 @@ namespace libmsstyle.Import
 
         private void CheckRecords(VisualStyle t, VisualStyle c, ResourceInventory cInv)
         {
-            var tk = RecordKeys(t).Concat(m_addedRecords).OrderBy(x => x, StringComparer.Ordinal).ToList();
+            var expected = RecordKeys(t).Concat(m_addedRecords).ToList();
+            foreach (var removed in m_removedRecords)
+            {
+                // one occurrence per removal, a state can hold the same name/type twice.
+                if (!expected.Remove(removed)) Error($"declared removal {removed} isn't a template record");
+            }
+            var tk = expected.OrderBy(x => x, StringComparer.Ordinal).ToList();
             var ck = RecordKeys(c).OrderBy(x => x, StringComparer.Ordinal).ToList();
-            if (!tk.SequenceEqual(ck)) Error("candidate's property records aren't the template's plus the declared additions");
-            else Check($"{ck.Count} property records: the template's set{(m_addedRecords.Count > 0 ? $" plus {m_addedRecords.Count} added font records" : "")}, nothing else.");
+            if (!tk.SequenceEqual(ck)) Error("candidate's property records aren't the template's plus the declared additions and minus the declared removals");
+            else Check($"{ck.Count} property records: the template's set{(m_addedRecords.Count > 0 ? $" plus {m_addedRecords.Count} added records" : "")}{(m_removedRecords.Count > 0 ? $" minus {m_removedRecords.Count} removed colors" : "")}, nothing else.");
 
             // uxtheme 19041 builds one section per class/part/state and fails with a duplicate
             // section error when a tuple shows up again later in the stream.
@@ -268,13 +276,14 @@ namespace libmsstyle.Import
             bool ok = FramesFit(cm, ce, info, out int count, out string why);
             if (ok) return;
             bool templateOk = te != null && tinfo != null && tinfo.Decodable && FramesFit(tm, te, tinfo, out _, out _);
-            if (m_frameWaivers.Contains(FrameWaiverKey(label, info.PixelSha1, count)))
+            if (m_frameWaivers.Contains(FrameWaiverKey(ce.PartKey, info.PixelSha1, count)))
                 Warn($"{label}: {why} (same as the source ships it, check it in the VM)");
             else if (templateOk) Error($"{label}: {why}");
             else Warn($"{label}: {why} (template has the same problem)");
         }
 
-        internal static string FrameWaiverKey(string label, string pixelSha1, int count) => label + "|" + pixelSha1 + "|" + count;
+        // class|part, not the property: a filled dpi slot carries the source's IMAGEFILE3 picture as IMAGEFILE6.
+        internal static string FrameWaiverKey(string partKey, string pixelSha1, int count) => partKey + "|" + pixelSha1 + "|" + count;
 
         internal static bool FramesFit(SemanticModel m, SemanticEntry e, ImageInfo info, out int count, out string why)
         {

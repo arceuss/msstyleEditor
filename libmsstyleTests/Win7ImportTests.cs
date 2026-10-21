@@ -220,16 +220,68 @@ namespace libmsstyleTests
         }
 
         [TestMethod]
-        public void FramesTheSourceShipsWithARemainderDontBlock()
+        public void PachenkoFramesAndColorsComeThrough()
         {
             // Pachenko (deviantart, not redistributable, x86) ships a 9x121 trackbar thumb with
             // IMAGECOUNT 5 and a 36x55 menu bar in 2; win7 drew them, so they're warnings, not errors.
+            // it also darkens ItemsView where aero11 nudged stock 252 to 255, and deletes TaskDialog's
+            // panel fills: colors follow the source either way.
             string pachenko = Environment.GetEnvironmentVariable("MSSTYLE_PACHENKO")
                 ?? @"C:\Users\arceus\Downloads\Pachenko theme by VIN STAR (Scanned)\Pachenko theme\theme\Aero\Pachenko\Pachenko.msstyles";
             if (!File.Exists(pachenko)) Assert.Inconclusive("Pachenko not found at " + pachenko);
-            var r = Win7StyleImporter.Run(new Win7ImportOptions { SourcePath = pachenko, TemplatePath = Aero11, DryRun = true });
+            string output = Path.Combine(m_dir, "pachenko.msstyles");
+            var r = Win7StyleImporter.Run(new Win7ImportOptions { SourcePath = pachenko, TemplatePath = Aero11, OutputPath = output, DryRun = false });
             Assert.AreEqual(ImportStatus.ReadyForVmTest, r.Status, string.Join("\n", r.Errors));
             Assert.IsTrue(r.Warnings.Any(w => w.Contains("TrackBar|THUMBTOP|S0|IMAGEFILE2") && w.Contains("same as the source ships it")));
+
+            using (var outStyle = new VisualStyle())
+            {
+                outStyle.Load(output);
+                var om = new SemanticModel(outStyle);
+                var fill = om.Entries.Single(e => e.ClassName == "ItemsView" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
+                Assert.AreEqual("rgb(26,26,26)", fill.Value);
+                Assert.IsFalse(om.Entries.Any(e => e.ClassName == "TaskDialog" && e.PartName == "PRIMARYPANEL" && e.NameId == (int)IDENTIFIER.FILLCOLOR),
+                    "the source deleted this color, the output must too");
+
+                // explorer's nav pane draws from the win10-only ExplorerNavPane; pachenko darkened Explorer::TreeView.
+                var pane = om.Entries.Single(e => e.ClassName == "ExplorerNavPane" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
+                Assert.AreEqual("rgb(26,26,26)", pane.Value);
+
+                // win10 adds black LISTITEM text that hides ItemsView's light text in lists and tiles.
+                foreach (int state in new[] { 1, 2, 3 })
+                {
+                    var text = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView::ListView"], 1, state, IDENTIFIER.TEXTCOLOR);
+                    Assert.AreEqual("rgb(200,200,200)", SemanticModel.FormatValue(text), "list/tile text, state " + state);
+                }
+
+                // Explorer::Button is new on win10. its part-level override must not hide the
+                // source's Button hot/default states either.
+                Assert.IsFalse(om.Entries.Any(e => e.ClassName == "Explorer::Button" && e.PartId == 1 && e.NameId == (int)IDENTIFIER.TEXTCOLOR));
+                foreach (var expected in new[] { (1, 144), (2, 200), (3, 144), (4, 54), (5, 144), (6, 144) })
+                {
+                    var text = SemanticModel.FindEffective(outStyle, om.ClassesByName["Explorer::Button"], 1, expected.Item1, IDENTIFIER.TEXTCOLOR);
+                    Assert.AreEqual($"rgb({expected.Item2},{expected.Item2},{expected.Item2})", SemanticModel.FormatValue(text), "push button text, state " + expected.Item1);
+                }
+                var darkText = SemanticModel.FindEffective(outStyle, om.ClassesByName["DarkMode_Explorer::Button"], 1, 1, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(255,255,255)", SemanticModel.FormatValue(darkText), "dark-mode text must still fit the template's dark backgrounds");
+
+                // DrawSizeBoxEx fills from the win10-only background part, not the grip image's hint.
+                var sizebox = om.Entries.Single(e => e.ClassName == "ScrollBar" && e.PartId == 11 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
+                Assert.AreEqual("rgb(26,26,26)", sizebox.Value);
+
+                // the drive-properties static-label miss isn't explained by missing theme colors.
+                foreach (var prop in new[] { IDENTIFIER.WINDOWTEXT, IDENTIFIER.BTNTEXT })
+                    Assert.AreEqual("rgb(144,144,144)", om.Entries.Single(e => e.ClassName == "sysmetrics" && e.NameId == (int)prop).Value);
+                var tabText = SemanticModel.FindEffective(outStyle, om.ClassesByName["Tab"], 10, 0, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(144,144,144)", SemanticModel.FormatValue(tabText));
+
+                // pachenko changes the scrollbar arrows' margins and has no IMAGEFILE4-6: those slots get
+                // its largest arrow strip instead of locking the part to aero11's light arrows.
+                var arrows = om.Entries.Where(e => e.ClassName == "ScrollBar" && e.PartName == "ARROWBTN" && e.StateId == 0).ToList();
+                var slot3 = arrows.Single(e => e.NameId == (int)IDENTIFIER.IMAGEFILE3).Value;
+                Assert.AreEqual(slot3, arrows.Single(e => e.NameId == (int)IDENTIFIER.IMAGEFILE6).Value);
+                Assert.AreEqual("(l4,t4,r4,b4)", arrows.Single(e => e.NameId == (int)IDENTIFIER.SIZINGMARGINS).Value);
+            }
         }
 
         [TestMethod]

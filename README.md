@@ -72,8 +72,9 @@ Limitations:
 
 * Offline validation is not a render test. Try the result in a disposable VM with a snapshot before using it for real.
 * Win7-only parts (Flip3D, reflection, side highlight) have no Windows 10 counterpart and are dropped.
-* Win10 templates add 192-384 dpi images that a Windows 7 style never had; at high DPI those parts still show the template image. The report lists them.
+* Win10 templates add 192-384 dpi images that a Windows 7 style never had. Where the custom style replaced a part's pictures, those extra slots get its largest picture; parts it left alone keep the template's high-dpi art.
 * Classes that don't exist in the template are reported, not added. Properties the custom style adds on top of stock Windows 7 (text glow, fonts, colors...) are added to the template's matching class.
+* Colors always come from the custom style, even where the template changed them on purpose, and a color the custom style deletes is deleted too. Template-only color overrides are removed where the merged inherited color already supplies the custom value. Explicit role mappings carry navigation-pane, file-list and size-grip background colors into their Windows 10 consumers. Dark-mode color overrides stay paired with the template's dark backgrounds. Other conflicts keep the template's value unless `--prefer-source` says otherwise.
 * Fonts are compared by what they parse to, not their spelling. A font the template doesn't have is added to its string tables, which means the result is saved with the strings inside the `.msstyles`. A font string Windows would reject (an unknown style word fails the whole theme) is never written, and a caption/menu font taller than its bar blocks the result.
 * Pictures the template reuses from stock Windows 7 elsewhere (dark mode classes, extra DPI sizes, shared image ids) get the custom style's version too, unless the custom style gave the parts that shared that picture different looks.
 
