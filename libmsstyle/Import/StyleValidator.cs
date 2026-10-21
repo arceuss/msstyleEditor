@@ -68,7 +68,7 @@ namespace libmsstyle.Import
                     CheckResources(tInv, cInv);
                     CheckParse(t, c, cInv);
                     CheckClasses(t, c);
-                    CheckRecords(t, c, cInv);
+                    CheckRecords(t, c, tInv, cInv);
                     var tm = new SemanticModel(t);
                     var cm = new SemanticModel(c);
                     CheckReferences(tm, cm);
@@ -170,7 +170,9 @@ namespace libmsstyle.Import
                             yield return $"{cls.ClassId}/{part.PartId}/{st.StateId}/{p.Header.nameID}/{p.Header.typeID}";
         }
 
-        private void CheckRecords(VisualStyle t, VisualStyle c, ResourceInventory cInv)
+        private static bool HasRecords(StyleClass cls) => cls.Parts.Values.Any(p => p.States.Values.Any(st => st.Properties.Count > 0));
+
+        private void CheckRecords(VisualStyle t, VisualStyle c, ResourceInventory tInv, ResourceInventory cInv)
         {
             var expected = RecordKeys(t).Concat(m_addedRecords).ToList();
             foreach (var removed in m_removedRecords)
@@ -182,6 +184,17 @@ namespace libmsstyle.Import
             var ck = RecordKeys(c).OrderBy(x => x, StringComparer.Ordinal).ToList();
             if (!tk.SequenceEqual(ck)) Error("candidate's property records aren't the template's plus the declared additions and minus the declared removals");
             else Check($"{ck.Count} property records: the template's set{(m_addedRecords.Count > 0 ? $" plus {m_addedRecords.Count} added records" : "")}{(m_removedRecords.Count > 0 ? $" minus {m_removedRecords.Count} removed colors" : "")}, nothing else.");
+
+            // uxtheme registers only classes that have VARIANT records and BCMAP parents index that
+            // registration order (18362 LoadClassDataMap / AddIndexInternal). a class gaining its first
+            // record or losing its last one shifts the parent of every class after it.
+            var tReg = new HashSet<int>(t.Classes.Values.Where(HasRecords).Select(x => x.ClassId));
+            var cReg = new HashSet<int>(c.Classes.Values.Where(HasRecords).Select(x => x.ClassId));
+            var lost = tReg.Except(cReg).Select(id => t.Classes[id].ClassName).ToList();
+            var gained = cReg.Except(tReg).Select(id => c.Classes[id].ClassName).ToList();
+            if (lost.Count > 0) Error($"classes lost all their records, which shifts every later BCMAP parent: {string.Join(", ", lost)}");
+            if (gained.Count > 0) Error($"classes got their first records, which shifts every later BCMAP parent: {string.Join(", ", gained)}");
+            if (lost.Count == 0 && gained.Count == 0) Check($"{cReg.Count} classes with records, the same set as the template: BCMAP parents keep pointing at the same classes.");
 
             // uxtheme 19041 builds one section per class/part/state and fails with a duplicate
             // section error when a tuple shows up again later in the stream.
@@ -215,6 +228,34 @@ namespace libmsstyle.Import
                 n++;
             }
             Check($"{n} records read sequentially; every class/part/state group is contiguous.");
+
+            // same reason as the class set above: the order classes first show up in VARIANT is
+            // the registration order BCMAP parents are relative to.
+            var tOrder = ClassOrder(tInv.GetData(tInv.Entries.First(e => e.Type == "VARIANT")));
+            var cOrder = ClassOrder(data);
+            if (!tOrder.SequenceEqual(cOrder))
+            {
+                int at = 0;
+                while (at < Math.Min(tOrder.Count, cOrder.Count) && tOrder[at] == cOrder[at]) at++;
+                Error($"classes show up in VARIANT in a different order than in the template (first difference at position {at}), which shifts BCMAP parents");
+            }
+            else Check($"{cOrder.Count} classes show up in VARIANT in the template's order.");
+        }
+
+        private static List<int> ClassOrder(byte[] data)
+        {
+            var order = new List<int>();
+            var seen = new HashSet<int>();
+            int cursor = 0;
+            while (cursor < data.Length - 4)
+            {
+                if (data.Skip(cursor).All(x => x == 0)) break;
+                int start = cursor;
+                var p = PropertyStream.ReadNextProperty(data, ref cursor);
+                if (cursor <= start) break;
+                if (seen.Add(p.Header.classID)) order.Add(p.Header.classID);
+            }
+            return order;
         }
 
         private void CheckReferences(SemanticModel tm, SemanticModel cm)
@@ -276,14 +317,15 @@ namespace libmsstyle.Import
             bool ok = FramesFit(cm, ce, info, out int count, out string why);
             if (ok) return;
             bool templateOk = te != null && tinfo != null && tinfo.Decodable && FramesFit(tm, te, tinfo, out _, out _);
-            if (m_frameWaivers.Contains(FrameWaiverKey(ce.PartKey, info.PixelSha1, count)))
+            if (m_frameWaivers.Contains(FrameWaiverKey(info.PixelSha1, count)))
                 Warn($"{label}: {why} (same as the source ships it, check it in the VM)");
             else if (templateOk) Error($"{label}: {why}");
             else Warn($"{label}: {why} (template has the same problem)");
         }
 
-        // class|part, not the property: a filled dpi slot carries the source's IMAGEFILE3 picture as IMAGEFILE6.
-        internal static string FrameWaiverKey(string partKey, string pixelSha1, int count) => partKey + "|" + pixelSha1 + "|" + count;
+        // picture and count, not the property or part: a filled dpi slot or a shared image id carries the
+        // source's strip into another property (aero11 shares one picture between Status GRIPPER and ScrollBar SIZEBOX).
+        internal static string FrameWaiverKey(string pixelSha1, int count) => pixelSha1 + "|" + count;
 
         internal static bool FramesFit(SemanticModel m, SemanticEntry e, ImageInfo info, out int count, out string why)
         {

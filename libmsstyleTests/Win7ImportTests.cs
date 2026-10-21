@@ -220,6 +220,32 @@ namespace libmsstyleTests
         }
 
         [TestMethod]
+        public void EmptyingAClassIsRejected()
+        {
+            // uxtheme only registers classes that have records, and BCMAP parents index that order.
+            // emptying aero11's Explorer::CommandModule (3 colors) shifted Flyout off FlyoutStyle and the
+            // tray flyout fell back to the System font, so even declared removals can't empty a class.
+            string candidate = Path.Combine(m_dir, "emptied.msstyles");
+            var removed = new List<string>();
+            using (var style = new VisualStyle())
+            {
+                style.Load(Aero11);
+                var cls = style.Classes.Values.Single(c => c.ClassName == "Explorer::CommandModule");
+                foreach (var part in cls.Parts.Values)
+                    foreach (var st in part.States.Values)
+                    {
+                        foreach (var p in st.Properties)
+                            removed.Add($"{cls.ClassId}/{part.PartId}/{st.StateId}/{p.Header.nameID}/{p.Header.typeID}");
+                        st.Properties.Clear();
+                    }
+                style.Save(candidate, false);
+            }
+            Assert.IsTrue(removed.Count > 0);
+            var v = new StyleValidator(Aero11, candidate, null, null, null, removedRecords: removed).Validate();
+            Assert.IsTrue(v.Errors.Any(e => e.Contains("lost all their records") && e.Contains("Explorer::CommandModule")), string.Join("\n", v.Errors));
+        }
+
+        [TestMethod]
         public void PachenkoFramesAndColorsComeThrough()
         {
             // Pachenko (deviantart, not redistributable, x86) ships a 9x121 trackbar thumb with
@@ -268,6 +294,12 @@ namespace libmsstyleTests
                 // DrawSizeBoxEx fills from the win10-only background part, not the grip image's hint.
                 var sizebox = om.Entries.Single(e => e.ClassName == "ScrollBar" && e.PartId == 11 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
                 Assert.AreEqual("rgb(26,26,26)", sizebox.Value);
+
+                // win10's separate explorer status bar must not keep aero11's white fill and blue text.
+                var statusFill = om.Entries.Single(e => e.ClassName == "ExplorerStatusBar" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
+                Assert.AreEqual("rgb(26,26,26)", statusFill.Value);
+                var statusText = om.Entries.Single(e => e.ClassName == "ExplorerStatusBar" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(144,144,144)", statusText.Value);
 
                 // the drive-properties static-label miss isn't explained by missing theme colors.
                 foreach (var prop in new[] { IDENTIFIER.WINDOWTEXT, IDENTIFIER.BTNTEXT })

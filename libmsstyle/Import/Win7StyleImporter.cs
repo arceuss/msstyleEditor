@@ -366,6 +366,9 @@ namespace libmsstyle.Import
             ("ItemsView::ListView", 1, 2, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
             ("ItemsView::ListView", 1, 3, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
             ("ScrollBar", 11, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.BTNFACE),
+            // verified win10 consumer: the explorer probe reads both at 0/0. the win7 role mapping is inferred.
+            ("ExplorerStatusBar", 0, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOW),
+            ("ExplorerStatusBar", 0, 0, IDENTIFIER.TEXTCOLOR, "Status", 0, 0, IDENTIFIER.TEXTCOLOR),
         };
 
         private void RemoveTemplateColorOverrides()
@@ -406,10 +409,14 @@ namespace libmsstyle.Import
                 bool followsSource = fallback != null && SemanticModel.FormatValue(fallback) == SemanticModel.FormatValue(sp);
                 state.Properties.Insert(index, a.Property);
                 if (!followsSource) continue;
-                RemoveRecord(a);
+                string how = RemoveColorRecord(a);
+                if (how == null) continue;
                 var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
-                Decide(a, "removed-color-override", "template-only color hid a changed source color; removed it so the merged source fallback supplies every state", null, s, a, SemanticModel.FormatValue(sp));
-                m_report.Count("removed-color-override");
+                Decide(a, how == "removed" ? "removed-color-override" : "pinned-color",
+                    how == "removed" ? "template-only color hid a changed source color; removed it so the merged source fallback supplies every state"
+                        : "template-only color hid a changed source color; it's this class's last record, so it holds the source color instead of being removed",
+                    null, s, a, SemanticModel.FormatValue(sp));
+                m_report.Count(how == "removed" ? "removed-color-override" : "pinned-color");
             }
         }
 
@@ -678,10 +685,22 @@ namespace libmsstyle.Import
                 // TaskDialog's panel fills so dialogs fall back to its dark system colors.
                 if (a.TypeId == (int)IDENTIFIER.COLOR && !KeyPattern.Matches(m_opt.Exclude, cls, part, prop) && !m_touched.Contains(a.Property))
                 {
-                    RemoveRecord(a);
-                    Decide(b, "removed-color", "source deleted this color; colors always follow the source", b, null, a, null);
-                    r.Count("removed-color");
-                    return true;
+                    string how = RemoveColorRecord(a);
+                    if (how == "removed")
+                    {
+                        Decide(b, "removed-color", "source deleted this color; colors always follow the source", b, null, a, null);
+                        r.Count("removed-color");
+                        return true;
+                    }
+                    if (how == "pinned")
+                    {
+                        Decide(a, "pinned-color", "source deleted this color, but it's this class's last record; it holds the value the deletion falls back to instead", b, null, a, SemanticModel.FormatValue(a.Property));
+                        r.Count("pinned-color");
+                        return true;
+                    }
+                    Decide(b, "kept-target", "source deleted this color, but it's this class's last record and nothing to fall back to; kept", b, null, a, null);
+                    r.Count("kept-target-last-record");
+                    return false;
                 }
                 Decide(b, "kept-target", "source removed this property; only color removals are imported", b, null, a, null);
                 return false;
@@ -775,6 +794,7 @@ namespace libmsstyle.Import
             bool color = !targetStock && a.TypeId == (int)IDENTIFIER.COLOR;
             string aliasNote = null;
             var applyFrom = s;
+            bool pictureFollows = false;
             if (!targetStock && !color)
             {
                 if (!KeyPattern.Matches(m_opt.PreferSource, cls, part, prop))
@@ -782,19 +802,31 @@ namespace libmsstyle.Import
                     var alias = ReferenceEquals(src, m_source) ? FindImageAlias(a) : null;
                     if (alias == null)
                     {
-                        Decide(s, "kept-target", "template changed this away from stock win7 (intentional win10 adaptation)", b, s, a, null);
-                        r.Count("kept-target-conflict");
-                        return false;
+                        // a picture the template redrew is still the template's art, but once the part
+                        // is cut with the source's frame count and margins the source's picture is the
+                        // one that fits them (shine's 145x43 Flyout LINKAREA vs aero11's 16x16).
+                        if (a.ResourceType == "IMAGE" && ReferenceEquals(src, m_source)
+                            && !string.Equals(cls, DwmClass, StringComparison.OrdinalIgnoreCase) && GeometryIsSource(s, a))
+                            pictureFollows = true;
+                        else
+                        {
+                            Decide(s, "kept-target", "template changed this away from stock win7 (intentional win10 adaptation)", b, s, a, null);
+                            r.Count("kept-target-conflict");
+                            return false;
+                        }
                     }
-                    if (Same(src, alias, m_target, a))
+                    else
                     {
-                        Decide(s, "kept-target", $"template uses the stock {alias.PartName} {alias.PropertyName} picture here, and the source left that one alone", b, s, a, null);
-                        r.Count("kept-target-alias-unchanged");
-                        return false;
+                        if (Same(src, alias, m_target, a))
+                        {
+                            Decide(s, "kept-target", $"template uses the stock {alias.PartName} {alias.PropertyName} picture here, and the source left that one alone", b, s, a, null);
+                            r.Count("kept-target-alias-unchanged");
+                            return false;
+                        }
+                        // follow the template's choice of stock sprite, with the source's version of it.
+                        aliasNote = $"template uses the stock {alias.ClassName}|{alias.PartName}|{alias.PropertyName} picture here; took the source's version of that one";
+                        applyFrom = alias;
                     }
-                    // follow the template's choice of stock sprite, with the source's version of it.
-                    aliasNote = $"template uses the stock {alias.ClassName}|{alias.PartName}|{alias.PropertyName} picture here; took the source's version of that one";
-                    applyFrom = alias;
                 }
                 else forced = true;
             }
@@ -812,10 +844,12 @@ namespace libmsstyle.Import
             ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
             string after = SemanticModel.FormatValue(a.Property);
             string note = partNameKnown ? null : "part matched by numeric id (no part name table)";
-            string action = color ? "applied-color" : forced ? "applied-override" : aliasNote != null ? "applied-alias" : "applied";
+            string action = color ? "applied-color" : forced ? "applied-override" : aliasNote != null ? "applied-alias" : pictureFollows ? "applied-picture-with-geometry" : "applied";
             Decide(a, action,
                 color ? "colors always follow the source, the template's adaptation was replaced"
-                    : forced ? "prefer-source rule overrode a template adaptation" : aliasNote ?? note ?? "template had the stock value",
+                    : forced ? "prefer-source rule overrode a template adaptation"
+                    : pictureFollows ? "template redrew this picture, but the part uses the source's frame count and margins, so the source's picture goes with them"
+                    : aliasNote ?? note ?? "template had the stock value",
                 b, applyFrom, a, after);
             r.Count(action);
             if (!partNameKnown) r.Count("applied-numeric-part");
@@ -837,6 +871,55 @@ namespace libmsstyle.Import
         }
 
         /// <summary>
+        /// true when the template part ends up cut like the source's: the source's geometry was taken
+        /// for the part, or the effective frame count, layout and margins already agree.
+        /// </summary>
+        private bool GeometryIsSource(SemanticEntry s, SemanticEntry a)
+        {
+            if (m_sourceGeometryParts.Contains(a.PartKey)) return true;
+            if (!m_source.ClassesByName.TryGetValue(s.ClassName, out var sc)) return false;
+            var tc = m_target.Style.Classes[a.ClassId];
+            foreach (var id in new[] { IDENTIFIER.IMAGECOUNT, IDENTIFIER.IMAGELAYOUT, IDENTIFIER.SIZINGMARGINS })
+            {
+                var sv = SemanticModel.FindEffective(m_source.Style, sc, s.PartId, s.StateId, id);
+                var tv = SemanticModel.FindEffective(m_target.Style, tc, a.PartId, a.StateId, id);
+                if ((sv == null) != (tv == null)) return false;
+                if (sv != null && SemanticModel.FormatValue(sv) != SemanticModel.FormatValue(tv)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Deletes a color record, unless it's the last record of its class. uxtheme only registers
+        /// classes that have VARIANT records, and BCMAP parents index that registration order
+        /// (18362 LoadClassDataMap / AddIndexInternal), so an emptied class shifts the parent of
+        /// every later class. Taking aero11's last Explorer::CommandModule records dropped Flyout's
+        /// FlyoutStyle parent and the tray flyout fell back to the System font. The last record
+        /// instead gets the value the deletion would fall back to. Returns "removed", "pinned", or
+        /// null when there's nothing to fall back to.
+        /// </summary>
+        private string RemoveColorRecord(SemanticEntry a)
+        {
+            var cls = m_target.Style.Classes[a.ClassId];
+            int records = cls.Parts.Values.Sum(p => p.States.Values.Sum(st => st.Properties.Count));
+            if (records > 1)
+            {
+                RemoveRecord(a);
+                return "removed";
+            }
+            var state = cls.Parts[a.PartId].States[a.StateId];
+            int index = state.Properties.IndexOf(a.Property);
+            state.Properties.RemoveAt(index);
+            var fallback = SemanticModel.FindEffective(m_target.Style, cls, a.PartId, a.StateId, (IDENTIFIER)a.NameId);
+            state.Properties.Insert(index, a.Property);
+            if (fallback == null || fallback.Header.typeID != a.TypeId) return null;
+            CopyValue(fallback, a.Property);
+            m_touched.Add(a.Property);
+            ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
+            return "pinned";
+        }
+
+        /// <summary>
         /// Adds a record the source has and stock win7 doesn't (text glow on the address bar, a
         /// font on the tree view...) to the template, in the same class, part (matched by name, or
         /// by number where there's no part table) and state. The class has to exist in the template;
@@ -850,6 +933,12 @@ namespace libmsstyle.Import
             if (!m_target.ClassesByName.TryGetValue(s.ClassName, out var cls) || m_target.DuplicateClassNames.Contains(s.ClassName))
             {
                 why = "class doesn't exist in the template (or isn't unique)";
+                return false;
+            }
+            // a class without records isn't registered by uxtheme; giving it one shifts every later BCMAP parent.
+            if (!cls.Parts.Values.Any(p => p.States.Values.Any(st => st.Properties.Count > 0)))
+            {
+                why = "the template class has no records; adding the first one would shift uxtheme's BCMAP parents";
                 return false;
             }
             int partId = s.PartId;
@@ -1073,7 +1162,7 @@ namespace libmsstyle.Import
                 var info = m_source.GetImageInfo(e.ResourceType, e.ResourceId);
                 if (info == null || !info.Decodable) continue;
                 if (!StyleValidator.FramesFit(m_source, e, info, out int count, out _))
-                    FrameWaivers.Add(StyleValidator.FrameWaiverKey(e.PartKey, info.PixelSha1, count));
+                    FrameWaivers.Add(StyleValidator.FrameWaiverKey(info.PixelSha1, count));
             }
         }
 
