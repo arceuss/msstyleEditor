@@ -220,6 +220,19 @@ namespace libmsstyleTests
         }
 
         [TestMethod]
+        public void FramesTheSourceShipsWithARemainderDontBlock()
+        {
+            // Pachenko (deviantart, not redistributable, x86) ships a 9x121 trackbar thumb with
+            // IMAGECOUNT 5 and a 36x55 menu bar in 2; win7 drew them, so they're warnings, not errors.
+            string pachenko = Environment.GetEnvironmentVariable("MSSTYLE_PACHENKO")
+                ?? @"C:\Users\arceus\Downloads\Pachenko theme by VIN STAR (Scanned)\Pachenko theme\theme\Aero\Pachenko\Pachenko.msstyles";
+            if (!File.Exists(pachenko)) Assert.Inconclusive("Pachenko not found at " + pachenko);
+            var r = Win7StyleImporter.Run(new Win7ImportOptions { SourcePath = pachenko, TemplatePath = Aero11, DryRun = true });
+            Assert.AreEqual(ImportStatus.ReadyForVmTest, r.Status, string.Join("\n", r.Errors));
+            Assert.IsTrue(r.Warnings.Any(w => w.Contains("TrackBar|THUMBTOP|S0|IMAGEFILE2") && w.Contains("same as the source ships it")));
+        }
+
+        [TestMethod]
         public void CandidateGetsTheTemplatesShellAndLanguageFolders()
         {
             // the 2004 aero sample keeps its strings in de-DE/en-GB/ja-JP .mui files and has a Shell folder.

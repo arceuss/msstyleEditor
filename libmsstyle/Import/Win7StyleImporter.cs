@@ -91,6 +91,7 @@ namespace libmsstyle.Import
                     new DwmImport(this).Run();
                     MergeGenericClasses();
                     ReportTemplateOnlyImages();
+                    CollectFrameWaivers();
 
                     foreach (var add in m_alloc.Added)
                     {
@@ -115,7 +116,7 @@ namespace libmsstyle.Import
                 }
 
                 r.Validation = new StyleValidator(m_opt.TemplatePath, candidate, m_alloc.Added, SpriteChecks, ChangedProperties.Values.ToList(),
-                    StringsAdded, GeometryWaivers, AddedRecords).Validate();
+                    StringsAdded, GeometryWaivers, AddedRecords, FrameWaivers).Validate();
                 foreach (var e in r.Validation.Errors) r.Errors.Add("validation: " + e);
                 foreach (var w in r.Validation.Warnings) r.Warnings.Add("validation: " + w);
                 return Finish(candidate);
@@ -876,6 +877,23 @@ namespace libmsstyle.Import
         private readonly Dictionary<string, int> m_addedFonts = new Dictionary<string, int>(StringComparer.Ordinal);
         /// <summary>DWMWindow parts whose geometry fails the check but is exactly what the source (or template) ships.</summary>
         internal HashSet<string> GeometryWaivers { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>source images that don't divide evenly into their IMAGECOUNT, keyed with pixels and count.</summary>
+        private HashSet<string> FrameWaivers { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+        private void CollectFrameWaivers()
+        {
+            // win7 drew these as shipped, so the same picture with the same count is a warning in
+            // the validator, not a blocker. a mix of source picture and template count still blocks.
+            foreach (var e in m_source.Entries)
+            {
+                if (e.ResourceType != "IMAGE" || e.NameId == (int)IDENTIFIER.GLYPHIMAGEFILE) continue;
+                var info = m_source.GetImageInfo(e.ResourceType, e.ResourceId);
+                if (info == null || !info.Decodable) continue;
+                if (!StyleValidator.FramesFit(m_source, e, info, out int count, out _))
+                    FrameWaivers.Add(StyleValidator.FrameWaiverKey($"{e.ClassName}|{e.PartName}|S{e.StateId}|{e.PropertyName}", info.PixelSha1, count));
+            }
+        }
 
         /// <summary>
         /// Finds the template string id holding the same font (parsed, not spelled the same) or

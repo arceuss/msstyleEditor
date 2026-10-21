@@ -18,7 +18,7 @@ namespace msstyleEditor
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
 
-            int applied = report.Counts.Where(kv => kv.Key.StartsWith("applied") && kv.Key != "applied-numeric-part" || kv.Key == "added-font").Sum(kv => kv.Value);
+            int applied = report.Counts.Where(kv => kv.Key.StartsWith("applied") && kv.Key != "applied-numeric-part" || kv.Key == "added").Sum(kv => kv.Value);
             int kept = report.Counts.Where(kv => kv.Key.StartsWith("kept-target")).Sum(kv => kv.Value);
             int missing;
             report.Counts.TryGetValue("skipped-target-missing", out missing);

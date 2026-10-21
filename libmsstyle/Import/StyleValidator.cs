@@ -20,14 +20,16 @@ namespace libmsstyle.Import
         private readonly bool m_stringsAdded;
         private readonly HashSet<string> m_geometryWaivers;
         private readonly List<string> m_addedRecords;
+        private readonly HashSet<string> m_frameWaivers;
         private readonly ValidationReport m_rep = new ValidationReport();
 
         /// <param name="added">"TYPE/id" -> bytes for every resource the import added.</param>
         /// <param name="stringsAdded">the import added font strings, so string tables (and a .mui link) were rewritten.</param>
         /// <param name="geometryWaivers">DWMWindow parts kept on purpose with geometry the check doesn't like (shipped that way by the source).</param>
+        /// <param name="frameWaivers"><see cref="FrameWaiverKey"/>s of source images that ship with a remainder after splitting into IMAGECOUNT frames.</param>
         internal StyleValidator(string template, string candidate, IReadOnlyDictionary<string, byte[]> added,
             List<SpriteExpectation> sprites, List<string> changedLabels, bool stringsAdded = false, IEnumerable<string> geometryWaivers = null,
-            IEnumerable<string> addedRecords = null)
+            IEnumerable<string> addedRecords = null, IEnumerable<string> frameWaivers = null)
         {
             m_template = template;
             m_candidate = candidate;
@@ -37,6 +39,7 @@ namespace libmsstyle.Import
             m_stringsAdded = stringsAdded;
             m_geometryWaivers = new HashSet<string>(geometryWaivers ?? new string[0], StringComparer.OrdinalIgnoreCase);
             m_addedRecords = (addedRecords ?? new string[0]).ToList();
+            m_frameWaivers = new HashSet<string>(frameWaivers ?? new string[0], StringComparer.Ordinal);
         }
 
         /// <summary>No-op check: the candidate must equal the template except for the listed additions.</summary>
@@ -253,27 +256,33 @@ namespace libmsstyle.Import
         }
 
         /// <summary>
-        /// A strip image has to divide into IMAGECOUNT frames along IMAGELAYOUT (0 vertical,
+        /// A strip image should divide into IMAGECOUNT frames along IMAGELAYOUT (0 vertical,
         /// 1 horizontal), with both looked up the way uxtheme falls back (state, state 0, part 0,
-        /// base class). Only an error when the template's picture passed the same check.
+        /// base class). Only an error when the template's picture passed the same check and the
+        /// source doesn't ship this exact picture with this count: win7 drew those (pachenko's
+        /// 9x121 trackbar thumb in 5) and no uxtheme check rejecting a remainder was found.
         /// </summary>
         private void CheckFrames(SemanticModel tm, SemanticEntry te, ImageInfo tinfo, SemanticModel cm, SemanticEntry ce, ImageInfo info, string label)
         {
             if (ce.NameId == (int)IDENTIFIER.GLYPHIMAGEFILE) return;
-            bool ok = FramesFit(cm, ce, info, out string why);
+            bool ok = FramesFit(cm, ce, info, out int count, out string why);
             if (ok) return;
-            bool templateOk = te != null && tinfo != null && tinfo.Decodable && FramesFit(tm, te, tinfo, out _);
-            if (templateOk) Error($"{label}: {why}");
+            bool templateOk = te != null && tinfo != null && tinfo.Decodable && FramesFit(tm, te, tinfo, out _, out _);
+            if (m_frameWaivers.Contains(FrameWaiverKey(label, info.PixelSha1, count)))
+                Warn($"{label}: {why} (same as the source ships it, check it in the VM)");
+            else if (templateOk) Error($"{label}: {why}");
             else Warn($"{label}: {why} (template has the same problem)");
         }
 
-        private static bool FramesFit(SemanticModel m, SemanticEntry e, ImageInfo info, out string why)
+        internal static string FrameWaiverKey(string label, string pixelSha1, int count) => label + "|" + pixelSha1 + "|" + count;
+
+        internal static bool FramesFit(SemanticModel m, SemanticEntry e, ImageInfo info, out int count, out string why)
         {
             why = null;
             var cls = m.Style.Classes[e.ClassId];
             var countProp = SemanticModel.FindEffective(m.Style, cls, e.PartId, e.StateId, IDENTIFIER.IMAGECOUNT);
             var layoutProp = SemanticModel.FindEffective(m.Style, cls, e.PartId, e.StateId, IDENTIFIER.IMAGELAYOUT);
-            int count = countProp?.GetValue() is int c && c > 0 ? c : 1;
+            count = countProp?.GetValue() is int c && c > 0 ? c : 1;
             bool horizontal = layoutProp?.GetValue() is int l && l == 1;
             int len = horizontal ? info.Width : info.Height;
             if (len % count == 0) return true;
