@@ -323,6 +323,21 @@ namespace libmsstyleTests
                 var sizebox = om.Entries.Single(e => e.ClassName == "ScrollBar" && e.PartId == 11 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
                 Assert.AreEqual("rgb(26,26,26)", sizebox.Value);
 
+                // spin arrows: the source changes their margins and replaces pictures the template had
+                // redrawn. the replaced pictures go with the source's geometry instead of locking the part.
+                using (var src = new VisualStyle())
+                {
+                    src.Load(pachenko);
+                    var sm = new SemanticModel(src);
+                    foreach (var part in new[] { "UP", "DOWN" })
+                    {
+                        Assert.AreEqual("(l3,t3,r3,b3)", om.Entries.Single(e => e.ClassName == "Spin" && e.PartName == part && e.StateId == 0 && e.NameId == (int)IDENTIFIER.SIZINGMARGINS).Value, part);
+                        foreach (var image in new[] { IDENTIFIER.IMAGEFILE, IDENTIFIER.IMAGEFILE1 })
+                            Assert.AreEqual(sm.Entries.Single(e => e.ClassName == "Spin" && e.PartName == part && e.StateId == 0 && e.NameId == (int)image).Value,
+                                om.Entries.Single(e => e.ClassName == "Spin" && e.PartName == part && e.StateId == 0 && e.NameId == (int)image).Value, part + " " + image);
+                    }
+                }
+
                 // win10's separate explorer status bar must not keep aero11's white fill and blue text.
                 var statusFill = om.Entries.Single(e => e.ClassName == "ExplorerStatusBar" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
                 Assert.AreEqual("rgb(26,26,26)", statusFill.Value);

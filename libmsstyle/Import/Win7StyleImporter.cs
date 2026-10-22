@@ -632,11 +632,12 @@ namespace libmsstyle.Import
                 if (KeyPattern.Matches(m_opt.PreferSource, b.ClassName, b.PartName, b.PropertyName)) continue;
 
                 bool conflict = !Same(m_base, b, m_target, a);
-                if (b.ResourceType == "IMAGE")
-                {
-                    if (conflict && FindImageAlias(a) == null) keptImage[b.PartKey] = b.PropertyName;
-                }
-                else if (conflict)
+                // a picture the source replaced never holds the part back, even where the template redrew
+                // it: once the part takes the source's geometry, ThreeWay hands it the source's picture too
+                // (applied-picture-with-geometry). only template art the source left alone (template-only
+                // slots above) would end up cut with the wrong numbers.
+                if (b.ResourceType == "IMAGE") continue;
+                if (conflict)
                     locked[b.PartKey] = $"{b.PropertyName} in this part is a template adaptation, so the part's strip geometry stays with the template";
                 else
                     scalarChange[b.PartKey] = b.PropertyName;
