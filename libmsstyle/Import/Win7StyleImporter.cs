@@ -350,38 +350,62 @@ namespace libmsstyle.Import
 
             PropagateImages(locked);
             FillDpiSlots(locked);
-            RemoveTemplateColorOverrides();
+            CopyIntoTemplateOverrides();
             MirrorIntoWin10Classes();
         }
 
-        // these role mappings are inferred from the styles and host screenshots, not shell code.
+        // confidence belongs to the role mapping, not just to the destination property's consumer.
         // SIZEBOXBKGND's consumer is verified: comctl32 19041.7663 DrawSizeBoxEx reads 11/0/FILLCOLOR.
         // its mapping to win7's BTNFACE is inferred; both stock values are 240,240,240.
-        private static readonly (string Class, int Part, int State, IDENTIFIER Prop, string FromClass, int FromPart, int FromState, IDENTIFIER FromProp)[] Win10Mirrors =
+        private static readonly (string Class, int Part, int State, IDENTIFIER Prop, string FromClass, int FromPart, int FromState, IDENTIFIER FromProp, bool Verified)[] Win10Mirrors =
         {
-            ("ExplorerNavPane", 0, 0, IDENTIFIER.FILLCOLOR, "Explorer::TreeView", 0, 0, IDENTIFIER.FILLCOLOR),
-            ("ExplorerNavPane", 0, 0, IDENTIFIER.TEXTCOLOR, "Explorer::TreeView", 1, 1, IDENTIFIER.TEXTCOLOR),
-            // win10's list-item overrides hide ItemsView's common text color on normal/hot/selected tiles.
-            ("ItemsView::ListView", 1, 1, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
-            ("ItemsView::ListView", 1, 2, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
-            ("ItemsView::ListView", 1, 3, IDENTIFIER.TEXTCOLOR, "ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR),
-            ("ScrollBar", 11, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.BTNFACE),
+            // win7's nav pane is ProperTree's FILLCOLORHINT (shellstyle UIFILE), not the tree's own fill;
+            // a style can set the two differently and win7 shows the hint.
+            ("ExplorerNavPane", 0, 0, IDENTIFIER.FILLCOLOR, "ProperTree", 2, 0, IDENTIFIER.FILLCOLORHINT, true),
+            // verified unique-color probe: normal nav labels and drive titles use WINDOWTEXT on win7.
+            ("ExplorerNavPane", 0, 0, IDENTIFIER.TEXTCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOWTEXT, true),
+            // win10 drive titles use ItemsView's common text, not LISTITEM state text.
+            ("ItemsView", 0, 0, IDENTIFIER.TEXTCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOWTEXT, true),
+            // verified open-dialog probe: win10 reads PROPERTY filename states; win7 uses WINDOWTEXT.
+            ("ItemsView", 4, 2, IDENTIFIER.TEXTCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOWTEXT, true),
+            ("ItemsView", 4, 3, IDENTIFIER.TEXTCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOWTEXT, true),
+            ("ScrollBar", 11, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.BTNFACE, false),
             // verified win10 consumer: the explorer probe reads both at 0/0. the win7 role mapping is inferred.
-            ("ExplorerStatusBar", 0, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOW),
-            ("ExplorerStatusBar", 0, 0, IDENTIFIER.TEXTCOLOR, "Status", 0, 0, IDENTIFIER.TEXTCOLOR),
+            ("ExplorerStatusBar", 0, 0, IDENTIFIER.FILLCOLOR, "sysmetrics", 0, 0, IDENTIFIER.WINDOW, false),
+            ("ExplorerStatusBar", 0, 0, IDENTIFIER.TEXTCOLOR, "Status", 0, 0, IDENTIFIER.TEXTCOLOR, false),
+            // shellstyle remaps, verified by diffing win7's shellstyle UIFILE (1, 1033) against aero11's win10 one:
+            // the nav pane (ProperTreeModule/Host) reads gtc(PROPERTREE, 2, 0, 3821) on win7 and 3802 on win10.
+            ("ProperTree", 2, 0, IDENTIFIER.FILLCOLOR, "ProperTree", 2, 0, IDENTIFIER.FILLCOLORHINT, true),
+            // the reading pane was a gradient of GRADIENTCOLOR1-3 on win7 and is a flat 3802 fill on win10.
+            // one color can't hold a gradient, the first stop is the closest.
+            ("ReadingPane", 1, 0, IDENTIFIER.FILLCOLOR, "ReadingPane", 1, 0, IDENTIFIER.GRADIENTCOLOR1, true),
         };
 
-        private void RemoveTemplateColorOverrides()
+        /// <summary>
+        /// Template-only records (aero11 additions) that hide a value the source changed further up
+        /// the inheritance chain get the source's value copied in, never deleted. Explorer::Button
+        /// doesn't exist on win7, inherits Button, and adds its own PUSHBUTTON text colors that would
+        /// otherwise beat the source's Button colors. Colors are copied in any class; other scalar
+        /// types only in win10-only classes (records with a win7 counterpart went through the merge).
+        /// Pictures and strip geometry stay the template's, they describe the template's art. A
+        /// win10-only class also gets the source's other states of a copied property where they
+        /// differ from its state 0, since win10 falls back to the copied state 0 instead of the
+        /// base class's state.
+        /// </summary>
+        private void CopyIntoTemplateOverrides()
         {
-            foreach (var a in m_target.Entries)
+            foreach (var a in m_target.Entries.ToList())
             {
-                if (a.TypeId != (int)IDENTIFIER.COLOR || m_touched.Contains(a.Property)
+                if (a.ResourceType != null || GeometryIds.Contains(a.NameId) || m_touched.Contains(a.Property)
                     || m_base.ByKey.ContainsKey(a.Key) || m_source.ByKey.ContainsKey(a.Key)
                     || a.ClassName.StartsWith("DarkMode", StringComparison.OrdinalIgnoreCase)
                     || m_target.DuplicateClassNames.Contains(a.ClassName)
+                    || string.Equals(a.ClassName, DwmClass, StringComparison.OrdinalIgnoreCase)
                     || KeyPattern.Matches(m_opt.Exclude, a.ClassName, a.PartName, a.PropertyName)) continue;
+                bool win10Only = !m_base.ClassesByName.ContainsKey(a.ClassName);
+                if (a.TypeId != (int)IDENTIFIER.COLOR && !win10Only) continue;
 
-                // a new win10 subclass can hide all the source's states with one part-level color.
+                // nearest class the source knows: itself, or the first template ancestor win7 had.
                 var tc = m_target.ClassesByName[a.ClassName];
                 var seen = new HashSet<int>();
                 while (!m_source.ClassesByName.ContainsKey(tc.ClassName) && seen.Add(tc.ClassId)
@@ -398,25 +422,73 @@ namespace libmsstyle.Import
                 }
                 var sp = SemanticModel.FindEffective(m_source.Style, sc, part, a.StateId, (IDENTIFIER)a.NameId);
                 var bp = SemanticModel.FindEffective(m_base.Style, bc, part, a.StateId, (IDENTIFIER)a.NameId);
-                if (sp == null || sp.Header.typeID != (int)IDENTIFIER.COLOR
-                    || (bp != null && SemanticModel.FormatValue(sp) == SemanticModel.FormatValue(bp))) continue;
+                if (sp == null || sp.Header.typeID != a.TypeId) continue;
+                bool sourceChanged = bp == null || SemanticModel.FormatValue(sp) != SemanticModel.FormatValue(bp);
+                if (sourceChanged)
+                    CopyInto(a, sp, "copied-into-override", $"template-only {a.PropertyName} hid the source's {sc.ClassName} value; copied it in");
 
-                // only remove an override when the merged fallback already supplies the source color.
-                var state = m_target.Style.Classes[a.ClassId].Parts[a.PartId].States[a.StateId];
-                int index = state.Properties.IndexOf(a.Property);
-                state.Properties.RemoveAt(index);
-                var fallback = SemanticModel.FindEffective(m_target.Style, m_target.ClassesByName[a.ClassName], a.PartId, a.StateId, (IDENTIFIER)a.NameId);
-                bool followsSource = fallback != null && SemanticModel.FormatValue(fallback) == SemanticModel.FormatValue(sp);
-                state.Properties.Insert(index, a.Property);
-                if (!followsSource) continue;
-                string how = RemoveColorRecord(a);
-                if (how == null) continue;
-                var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
-                Decide(a, how == "removed" ? "removed-color-override" : "pinned-color",
-                    how == "removed" ? "template-only color hid a changed source color; removed it so the merged source fallback supplies every state"
-                        : "template-only color hid a changed source color; it's this class's last record, so it holds the source color instead of being removed",
-                    null, s, a, SemanticModel.FormatValue(sp));
-                m_report.Count(how == "removed" ? "removed-color-override" : "pinned-color");
+                if (win10Only && a.StateId == 0) AddSourceStates(a, sc, bc, part);
+            }
+        }
+
+        private bool CopyInto(SemanticEntry a, StyleProperty sp, string action, string reason)
+        {
+            var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
+            if (Same(m_source, s, m_target, a)) return false;
+            if (!ApplySourceValue(m_source, s, a.Property, out string err))
+            {
+                m_report.Warnings.Add($"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}: not copied, {err}");
+                return false;
+            }
+            m_touched.Add(a.Property);
+            ChangedProperties[a.Property] = $"{a.ClassName}|{a.PartName}|S{a.StateId}|{a.PropertyName}";
+            Decide(a, action, reason, null, s, a, SemanticModel.FormatValue(a.Property));
+            m_report.Count(action);
+            return true;
+        }
+
+        /// <summary>
+        /// For a win10-only class's state-0 record: where the source's ancestor has a different value
+        /// in another state of the same part, and the class has no record there, add one.
+        /// </summary>
+        private void AddSourceStates(SemanticEntry a, StyleClass sc, StyleClass bc, int sourcePart)
+        {
+            if (!sc.Parts.TryGetValue(sourcePart, out var spart)) return;
+            var s0 = SemanticModel.FindEffective(m_source.Style, sc, sourcePart, 0, (IDENTIFIER)a.NameId);
+            var cls = m_target.Style.Classes[a.ClassId];
+            var tpart = cls.Parts[a.PartId];
+            foreach (int state in spart.States.Keys.Where(k => k != 0).OrderBy(k => k))
+            {
+                if (tpart.States.TryGetValue(state, out var existing) && existing.Properties.Any(p => p.Header.nameID == a.NameId)) continue;
+                var sv = SemanticModel.FindEffective(m_source.Style, sc, sourcePart, state, (IDENTIFIER)a.NameId);
+                if (sv == null || sv.Header.typeID != a.TypeId) continue;
+                if (s0 != null && SemanticModel.FormatValue(sv) == SemanticModel.FormatValue(s0)) continue;
+                var bv = SemanticModel.FindEffective(m_base.Style, bc, sourcePart, state, (IDENTIFIER)a.NameId);
+                var tv = SemanticModel.FindEffective(m_target.Style, cls, a.PartId, state, (IDENTIFIER)a.NameId);
+                // stock win7 had this per-state value too and the template already shows it: nothing to fix.
+                if (bv != null && tv != null && SemanticModel.FormatValue(sv) == SemanticModel.FormatValue(bv)
+                    && SemanticModel.FormatValue(tv) == SemanticModel.FormatValue(bv)) continue;
+                if (KeyPattern.Matches(m_opt.Exclude, a.ClassName, a.PartName, a.PropertyName)) continue;
+                var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sv));
+                var prop = new StyleProperty((PropertyHeader)a.Property.Header.Clone());
+                prop.Header.stateID = state;
+                CopyValue(a.Property, prop);
+                if (!ApplySourceValue(m_source, s, prop, out string err))
+                {
+                    m_report.Warnings.Add($"{a.ClassName}|{a.PartName}|S{state}|{a.PropertyName}: not added, {err}");
+                    continue;
+                }
+                if (!tpart.States.TryGetValue(state, out var st))
+                {
+                    st = new StyleState { StateId = state, StateName = "State " + state };
+                    tpart.States.Add(state, st);
+                }
+                st.Properties.Add(prop);
+                MarkTouched(prop, $"{a.ClassName}|{a.PartName}|S{state}|{a.PropertyName}");
+                AddedRecords.Add($"{cls.ClassId}/{a.PartId}/{state}/{prop.Header.nameID}/{prop.Header.typeID}");
+                Decide(s, "added-state-copy", $"win10-only {a.ClassName} would fall back to its own state 0; copied the source's {s.ClassName} state {state} value",
+                    null, s, null, SemanticModel.FormatValue(prop));
+                m_report.Count("added-state-copy");
             }
         }
 
@@ -426,7 +498,9 @@ namespace libmsstyle.Import
             {
                 if (m_target.DuplicateClassNames.Contains(m.Class) || KeyPattern.Matches(m_opt.Exclude, m.Class, "*", m.Prop.ToString())) continue;
                 var a = m_target.Entries.FirstOrDefault(e => e.ClassName == m.Class && e.PartId == m.Part && e.StateId == m.State && e.NameId == (int)m.Prop);
-                if (a == null || m_touched.Contains(a.Property)) continue;
+                if (a == null) continue;
+                // role remaps replace copied colors too, but never resurrect a source deletion.
+                if (!m_target.Style.Classes[a.ClassId].Parts[a.PartId].States[a.StateId].Properties.Contains(a.Property)) continue;
                 if (!m_source.ClassesByName.TryGetValue(m.FromClass, out var sc) || !m_base.ClassesByName.TryGetValue(m.FromClass, out var bc)) continue;
                 var sp = SemanticModel.FindEffective(m_source.Style, sc, m.FromPart, m.FromState, m.FromProp);
                 var bp = SemanticModel.FindEffective(m_base.Style, bc, m.FromPart, m.FromState, m.FromProp);
@@ -436,7 +510,7 @@ namespace libmsstyle.Import
                 var s = m_source.Entries.First(e => ReferenceEquals(e.Property, sp));
                 if (Same(m_source, s, m_target, a)) continue;
                 ApplyExtra(a, s, null, "applied-mirror",
-                    $"inferred win10 role mapping from {s.ClassName}|{s.PartName}|S{s.StateId}|{s.PropertyName}");
+                    $"{(m.Verified ? "VERIFIED" : "INFERRED")} win10 role mapping from {s.ClassName}|{s.PartName}|S{s.StateId}|{s.PropertyName}");
             }
         }
 
@@ -470,8 +544,8 @@ namespace libmsstyle.Import
                 && !m_target.DuplicateClassNames.Contains(e.ClassName)
                 && !locked.ContainsKey(e.PartKey)
                 && !KeyPattern.Matches(m_opt.Exclude, e.ClassName, e.PartName, e.PropertyName)
-                // still the stock picture of its own key: the three-way merge already decided it, e.g.
-                // shine keeps RESTOREBUTTON stock while aero11 merely shares its id with MAXBUTTON.
+                // still the stock picture of its own key: the three-way merge already decided it, e.g. a
+                // source keeps RESTOREBUTTON stock while the template merely shares its id with MAXBUTTON.
                 && !(m_base.ByKey.TryGetValue(e.Key, out var own) && Same(m_base, own, m_target, e)));
 
             foreach (var e in Candidates().ToList())
@@ -681,7 +755,7 @@ namespace libmsstyle.Import
             {
                 r.Count("source-removed");
                 if (a == null) return false;
-                // colors follow the source no matter what, including deleting them: pachenko drops
+                // colors follow the source no matter what, including deleting them: a dark style can drop
                 // TaskDialog's panel fills so dialogs fall back to its dark system colors.
                 if (a.TypeId == (int)IDENTIFIER.COLOR && !KeyPattern.Matches(m_opt.Exclude, cls, part, prop) && !m_touched.Contains(a.Property))
                 {
@@ -804,7 +878,7 @@ namespace libmsstyle.Import
                     {
                         // a picture the template redrew is still the template's art, but once the part
                         // is cut with the source's frame count and margins the source's picture is the
-                        // one that fits them (shine's 145x43 Flyout LINKAREA vs aero11's 16x16).
+                        // one that fits them (a 145x43 flyout link area vs the template's 16x16).
                         if (a.ResourceType == "IMAGE" && ReferenceEquals(src, m_source)
                             && !string.Equals(cls, DwmClass, StringComparison.OrdinalIgnoreCase) && GeometryIsSource(s, a))
                             pictureFollows = true;
@@ -893,7 +967,7 @@ namespace libmsstyle.Import
         /// Deletes a color record, unless it's the last record of its class. uxtheme only registers
         /// classes that have VARIANT records, and BCMAP parents index that registration order
         /// (18362 LoadClassDataMap / AddIndexInternal), so an emptied class shifts the parent of
-        /// every later class. Taking aero11's last Explorer::CommandModule records dropped Flyout's
+        /// every later class. Emptying a template class early in the list dropped Flyout's
         /// FlyoutStyle parent and the tray flyout fell back to the System font. The last record
         /// instead gets the value the deletion would fall back to. Returns "removed", "pinned", or
         /// null when there's nothing to fall back to.

@@ -216,6 +216,24 @@ namespace libmsstyleTests
                 var glow = om.Entries.SingleOrDefault(e => e.ClassName == "BBComposited::Toolbar" && e.StateId == 0 && e.NameId == (int)IDENTIFIER.TEXTGLOWSIZE);
                 Assert.IsNotNull(glow, "source-added text glow missing from the output");
                 Assert.AreEqual("5", glow.Value);
+
+                // dream's win7 nav pane is ProperTree's FILLCOLORHINT (238), not its tree fill (219). win10 reads
+                // ExplorerNavPane for the pane and ProperTree FILLCOLOR for the host's 1px left padding.
+                Assert.AreEqual("rgb(238,238,238)", om.Entries.Single(e => e.ClassName == "ExplorerNavPane" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR).Value);
+                Assert.AreEqual("rgb(238,238,238)", om.Entries.Single(e => e.ClassName == "ProperTree" && e.PartId == 2 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR).Value);
+
+                // unique-color probes identify ItemsView common text on win10; win7 uses WINDOWTEXT.
+                var commonText = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView"], 0, 0, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(92,92,92)", SemanticModel.FormatValue(commonText), "drive tile title");
+                var navText = SemanticModel.FindEffective(outStyle, om.ClassesByName["ExplorerNavPane"], 0, 0, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(92,92,92)", SemanticModel.FormatValue(navText), "normal nav labels");
+                foreach (int state in new[] { 2, 3 })
+                {
+                    var filename = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView"], 4, state, IDENTIFIER.TEXTCOLOR);
+                    Assert.AreEqual("rgb(92,92,92)", SemanticModel.FormatValue(filename), "file name, state " + state);
+                }
+                var subtitle = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView"], 4, 1, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(109,109,109)", SemanticModel.FormatValue(subtitle), "the matching free-space subtitle color must stay unchanged");
             }
         }
 
@@ -273,16 +291,26 @@ namespace libmsstyleTests
                 var pane = om.Entries.Single(e => e.ClassName == "ExplorerNavPane" && e.PartId == 0 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR);
                 Assert.AreEqual("rgb(26,26,26)", pane.Value);
 
-                // win10 adds black LISTITEM text that hides ItemsView's light text in lists and tiles.
-                foreach (int state in new[] { 1, 2, 3 })
+                // win10's shellstyle reads the nav pane from PROPERTREE 2/0 FILLCOLOR and the reading pane
+                // from ReadingPane 1/0 FILLCOLOR; win7's read FILLCOLORHINT and a GRADIENTCOLOR1-3 gradient.
+                Assert.AreEqual("rgb(26,26,26)", om.Entries.Single(e => e.ClassName == "ProperTree" && e.PartId == 2 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR).Value);
+                Assert.AreEqual("rgb(26,26,26)", om.Entries.Single(e => e.ClassName == "ReadingPane" && e.PartId == 1 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.FILLCOLOR).Value);
+
+                // win7 uses WINDOWTEXT (144), not the source's ItemsView common text (200).
+                // the role remap must replace that already-copied source color.
+                var titleText = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView"], 0, 0, IDENTIFIER.TEXTCOLOR);
+                Assert.AreEqual("rgb(144,144,144)", SemanticModel.FormatValue(titleText), "drive tile title");
+                foreach (int state in new[] { 2, 3 })
                 {
-                    var text = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView::ListView"], 1, state, IDENTIFIER.TEXTCOLOR);
-                    Assert.AreEqual("rgb(200,200,200)", SemanticModel.FormatValue(text), "list/tile text, state " + state);
+                    var filename = SemanticModel.FindEffective(outStyle, om.ClassesByName["ItemsView"], 4, state, IDENTIFIER.TEXTCOLOR);
+                    Assert.AreEqual("rgb(144,144,144)", SemanticModel.FormatValue(filename), "file name, state " + state);
                 }
 
-                // Explorer::Button is new on win10. its part-level override must not hide the
-                // source's Button hot/default states either.
-                Assert.IsFalse(om.Entries.Any(e => e.ClassName == "Explorer::Button" && e.PartId == 1 && e.NameId == (int)IDENTIFIER.TEXTCOLOR));
+                // Explorer::Button is new on win10 and adds its own PUSHBUTTON text on top of Button.
+                // those records stay and get the source's values copied in; states the source sets
+                // apart from state 0 are added, since win10 falls back to the class's own state 0.
+                Assert.IsTrue(om.Entries.Any(e => e.ClassName == "Explorer::Button" && e.PartId == 1 && e.StateId == 0 && e.NameId == (int)IDENTIFIER.TEXTCOLOR), "template record must not be deleted");
+                Assert.IsTrue(om.Entries.Any(e => e.ClassName == "Explorer::Button" && e.PartId == 1 && e.StateId == 2 && e.NameId == (int)IDENTIFIER.TEXTCOLOR), "source hot text must be added to the win10 class");
                 foreach (var expected in new[] { (1, 144), (2, 200), (3, 144), (4, 54), (5, 144), (6, 144) })
                 {
                     var text = SemanticModel.FindEffective(outStyle, om.ClassesByName["Explorer::Button"], 1, expected.Item1, IDENTIFIER.TEXTCOLOR);

@@ -308,8 +308,8 @@ namespace libmsstyle.Import
         /// A strip image should divide into IMAGECOUNT frames along IMAGELAYOUT (0 vertical,
         /// 1 horizontal), with both looked up the way uxtheme falls back (state, state 0, part 0,
         /// base class). Only an error when the template's picture passed the same check and the
-        /// source doesn't ship this exact picture with this count: win7 drew those (pachenko's
-        /// 9x121 trackbar thumb in 5) and no uxtheme check rejecting a remainder was found.
+        /// source doesn't ship this exact picture with this count: win7 drew those (e.g. a 9x121
+        /// trackbar thumb in 5) and no uxtheme check rejecting a remainder was found.
         /// </summary>
         private void CheckFrames(SemanticModel tm, SemanticEntry te, ImageInfo tinfo, SemanticModel cm, SemanticEntry ce, ImageInfo info, string label)
         {

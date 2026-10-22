@@ -7,7 +7,7 @@ namespace libmsstyle.Import
 {
     public class Win7ImportOptions
     {
-        /// <summary>the customized windows 7 style (e.g. Shine).</summary>
+        /// <summary>the customized windows 7 style.</summary>
         public string SourcePath { get; set; }
         /// <summary>unmodified windows 7 aero, the common ancestor of the source. Empty = the copy built into libmsstyle.</summary>
         public string BasePath { get; set; }
